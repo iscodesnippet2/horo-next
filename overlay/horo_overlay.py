@@ -36,6 +36,11 @@ DIST_NAME = "horo-next"
 # The upper bound follows each upstream release: we do not vouch for a Python
 # upstream has not tested a release against.
 MIN_PYTHON = (3, 11)
+# The air-gapped machines run CPython 3.12. A release that cannot install
+# there is not a release, so it stops here rather than at someone's terminal.
+# Upstream main already declares 3.14-only dependencies; if that reaches a
+# tagged release, this is the line that catches it.
+REQUIRED_PYTHONS = ("3.12",)
 
 # Asset directories at the repo root, outside any Python package — absent from
 # a wheel built with upstream's config.
@@ -241,6 +246,10 @@ counts = {pyv: sum(1 for r in core if r.marker is None or r.marker.evaluate(
     for pyv in supported}
 if len(set(counts.values())) > 1:
     fail(f"core dependency set differs across supported Pythons: {counts}")
+for required in REQUIRED_PYTHONS:
+    if required not in supported:
+        fail(f"Python {required} is not supported by this release ({spec}) — "
+             f"the air-gapped target cannot install it")
 print(f"[overlay] supported Python: {', '.join(supported)}")
 
 if failures:

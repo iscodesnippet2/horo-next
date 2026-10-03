@@ -56,8 +56,21 @@ dependencies are left to pip, which already picks the newest available —
 adding floors for them would break installs behind mirrors that have not
 synced the fix yet.
 
-**Python 3.11 stays supported.** The upper bound follows each upstream
-release; horo-next does not vouch for a Python upstream has not tested.
+**Python 3.11 stays supported, and 3.12 is required.** The upper bound
+follows each upstream release; horo-next does not vouch for a Python upstream
+has not tested. The air-gapped target runs CPython 3.12 on Linux, so a release
+that cannot install there stops at the overlay rather than at an install.
+
+**No known advisory in core dependencies on the target.** `overlay/audit.py`
+checks the Linux / Python 3.12 dependency set against OSV on both install
+paths — the offline list pinned by the lock, and what `pip install horo-next`
+resolves today. A core advisory holds the release: a mirror that filters by
+CVE refuses the whole install if one core package is blocked. Advisories in
+extras are reported in the release notes without holding it.
+
+A clean audit is a snapshot, not a guarantee. PyJWT 2.13.0 was clean when
+upstream released v0.21.5 and carried a CRITICAL advisory six days later.
+Enterprise mirrors may also use advisory databases other than OSV.
 
 ## Releasing
 

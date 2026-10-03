@@ -62,6 +62,30 @@ jobs:
         working-directory: upstream
         run: uv build --wheel --out-dir ../dist
 
+      # The air-gapped target is Linux / CPython 3.12. Two install paths reach
+      # it with different versions, so both are audited: the offline list
+      # (pinned by the lock) and a fresh resolution of the wheel (what
+      # `pip install horo-next` picks today). A core advisory on either holds
+      # the release — a CVE-filtering mirror refuses the whole install if one
+      # core package is blocked. Extras are reported, not held.
+      - name: Audit core dependencies for Linux / Python 3.12
+        run: |
+          echo "## Advisory audit — Linux / Python 3.12" >> release-notes.md
+          echo "dist/horo_next-${{ inputs.version }}-py3-none-any.whl" > online.in
+          uv pip compile online.in --python-version 3.12 \
+            --python-platform x86_64-manylinux_2_28 --no-header -q -o online-core.txt
+          uv run --with packaging python overlay/audit.py "requirements-${{ inputs.version }}.txt" \
+            "Core, offline list" --fail --notes release-notes.md
+          uv run --with packaging python overlay/audit.py online-core.txt \
+            "Core, pip install" --fail --notes release-notes.md
+
+      - name: Report advisories in extras
+        run: |
+          (cd upstream && uv export --frozen --no-dev --all-extras --no-emit-project \
+            --no-hashes --format requirements-txt) > offline-all.txt
+          uv run --with packaging python overlay/audit.py offline-all.txt \
+            "All extras, offline list" --notes release-notes.md
+
       - id: meta
         run: echo "pythons=$(jq -c .pythons upstream/horo-build.json)" >> "$GITHUB_OUTPUT"
 
