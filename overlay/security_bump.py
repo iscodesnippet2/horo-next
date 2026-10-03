@@ -162,8 +162,14 @@ for _, _, name, before, after, ids in changes:
 for h in held:
     print(f"[security] HOLD {h}")
 
-# Re-lock: the raised versions must still resolve against everything else.
-if changes and not held:
+# Re-lock — always, not only when something was raised. The overlay renamed
+# the project and its self-referencing extras in pyproject.toml, but upstream's
+# uv.lock still records the project as hermes-agent. The offline dependency
+# list is exported from the lock with --frozen, which does not check the two
+# agree, so a release that happened to need no bump would publish a list
+# derived from a lock describing a different project. Re-locking also checks
+# that any raised versions still resolve against everything else.
+if not held:
     # The uv on PATH (setup-uv in CI). Override with HORO_UV, e.g.
     # HORO_UV="uvx --from uv@0.12.22 uv", where the local uv predates
     # upstream's lockfile format.

@@ -82,9 +82,15 @@ jobs:
       - name: Report advisories in extras
         run: |
           (cd upstream && uv export --frozen --no-dev --all-extras --no-emit-project \
-            --no-hashes --format requirements-txt) > offline-all.txt
-          uv run --with packaging python overlay/audit.py offline-all.txt \
+            --no-hashes --format requirements-txt) > "requirements-${{ inputs.version }}-all-extras.txt"
+          uv run --with packaging python overlay/audit.py \
+            "requirements-${{ inputs.version }}-all-extras.txt" \
             "All extras, offline list" --notes release-notes.md
+
+      # Files for airgap/probe.py, attached to the GitHub release so the
+      # air-gapped site fetches everything it needs from one page.
+      - name: Map packages to the features that need them
+        run: uv run python overlay/extras_map.py upstream "extras-map-${{ inputs.version }}.json"
 
       - id: meta
         run: echo "pythons=$(jq -c .pythons upstream/horo-build.json)" >> "$GITHUB_OUTPUT"
@@ -96,6 +102,9 @@ jobs:
             dist/
             release-notes.md
             requirements-${{ inputs.version }}.txt
+            requirements-${{ inputs.version }}-all-extras.txt
+            extras-map-${{ inputs.version }}.json
+            airgap/probe.py
           if-no-files-found: error
 
   verify:
@@ -159,4 +168,8 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "horo-next ${{ inputs.version }} (upstream ${{ inputs.upstream_tag }})" \
             --notes-file release-notes.md \
-            dist/*.whl "requirements-${{ inputs.version }}.txt"
+            dist/*.whl \
+            "requirements-${{ inputs.version }}.txt" \
+            "requirements-${{ inputs.version }}-all-extras.txt" \
+            "extras-map-${{ inputs.version }}.json" \
+            airgap/probe.py

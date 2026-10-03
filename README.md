@@ -22,6 +22,9 @@ committed here**. The default branch, `horo`, holds only the tooling:
 | `overlay/horo_overlay.py` | Packaging changes applied to an upstream checkout |
 | `overlay/security_bump.py` | Raises direct dependencies that have a published vulnerability fix |
 | `overlay/verify_wheel.py` | Installs the wheel into a clean venv and checks it works |
+| `overlay/audit.py` | Checks the Linux / Python 3.12 dependency set against OSV |
+| `overlay/extras_map.py` | Maps each package to the features (core or extras) that need it |
+| `airgap/probe.py` | Run on an air-gapped machine: which dependencies the mirror serves |
 | `pypi/README.md` | The project page shown on PyPI |
 | `.github/workflows/release.yml` | Tag → overlay → bump → wheel → verify → TestPyPI → PyPI |
 
