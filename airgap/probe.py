@@ -171,6 +171,9 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=4, help="parallel downloads (default 4)")
     ap.add_argument("--timeout", type=int, default=300, help="seconds per package (default 300)")
     ap.add_argument("--report", type=Path, help="report path (default: next to the requirements file)")
+    ap.add_argument("--no-self", action="store_true",
+                    help="do not probe horo-next itself — for checking the dependencies "
+                         "before a version has been published")
     args = ap.parse_args()
 
     reqs = read_requirements(args.requirements)
@@ -180,7 +183,7 @@ def main() -> int:
 
     # horo-next itself must come from the mirror too.
     version = re.search(r"requirements-(\d+\.\d+\.\d+(?:\.post\d+)?)", args.requirements.name)
-    if version:
+    if version and not args.no_self:
         reqs.insert(0, f"horo-next=={version.group(1)}")
 
     feature = {}

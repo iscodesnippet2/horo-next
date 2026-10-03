@@ -33,6 +33,10 @@ Then the optional features:
 python3 probe.py requirements-0.21.5-all-extras.txt --map extras-map-0.21.5.json
 ```
 
+Before a version has been published, add `--no-self`: the script otherwise
+also checks `horo-next` itself, which no mirror can have yet, and would report
+that horo-next cannot be installed.
+
 pip uses this machine's configuration (`pip.conf`, `PIP_INDEX_URL`,
 certificates, proxy). To point at a mirror explicitly, add
 `--index-url https://mirror.example/simple`.
