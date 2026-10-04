@@ -21,7 +21,7 @@ committed here**. The default branch, `horo`, holds only the tooling:
 |---|---|
 | `overlay/horo_overlay.py` | Packaging changes applied to an upstream checkout |
 | `overlay/security_bump.py` | Raises direct dependencies that have a published vulnerability fix |
-| `overlay/build_frontends.py` | Prebuilds the dashboard and TUI into the package (needs Node 22) |
+| `overlay/build_frontends.py` | Prebuilds the dashboard and TUI into the package (needs Node 22); raises npm packages with a published fix, and leaves out a front end that still carries an advisory |
 | `overlay/verify_wheel.py` | Installs the wheel into a clean venv and checks it works |
 | `overlay/audit.py` | Checks the Linux / Python 3.12 dependency set against OSV |
 | `overlay/extras_map.py` | Maps each package to the features (core or extras) that need it |

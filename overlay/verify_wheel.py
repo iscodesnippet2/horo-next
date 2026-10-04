@@ -1,6 +1,10 @@
 """Install a built horo-next wheel into a clean venv and check it actually works.
 
-    python overlay/verify_wheel.py <wheel> <python-version> <expected-version>
+    python overlay/verify_wheel.py <wheel> <python-version> <expected-version> [frontends]
+
+`frontends` is the comma-separated list build_frontends.py bundled (from
+horo-build.json; default "dashboard,tui"). Each listed one must work; each
+unlisted one must be absent — it was left out for carrying an advisory.
 
 Every check here guards a failure that a successful build and upload would not
 reveal. The wheel can be accepted by PyPI and install without error while:
@@ -28,6 +32,7 @@ import urllib.request
 from pathlib import Path
 
 WHEEL, PYV, EXPECTED = Path(sys.argv[1]).resolve(), sys.argv[2], sys.argv[3]
+FRONTENDS = set(filter(None, (sys.argv[4] if len(sys.argv) > 4 else "dashboard,tui").split(",")))
 
 failures: list[str] = []
 
@@ -117,9 +122,15 @@ print("JSON" + json.dumps(out))
         check(data["adopted_home_checkout"] == "None",
               "a git checkout in HERMES_HOME is not adopted as this install",
               data["adopted_home_checkout"])
-        check(data["web_dist"], "prebuilt dashboard ships in the wheel")
-        check(data["tui"].endswith("tui_dist/entry.js"), "prebuilt TUI resolves from the wheel", data["tui"])
-        if data["tui"] != "None" and shutil.which("node"):
+        if "dashboard" in FRONTENDS:
+            check(data["web_dist"], "prebuilt dashboard ships in the wheel")
+        else:
+            check(not data["web_dist"], "dashboard left out (advisory) is absent")
+        if "tui" in FRONTENDS:
+            check(data["tui"].endswith("tui_dist/entry.js"), "prebuilt TUI resolves from the wheel", data["tui"])
+        else:
+            check(data["tui"] == "None", "TUI left out (advisory) is absent", data["tui"])
+        if "tui" in FRONTENDS and data["tui"] != "None" and shutil.which("node"):
             r = run("node", "--check", data["tui"])
             check(r.returncode == 0, "TUI bundle parses under node", r.stderr[-200:])
 
@@ -149,39 +160,42 @@ print("JSON" + json.dumps(out))
     # From a source checkout `hermes dashboard` builds the front end with npm
     # first; from a wheel there is no source, so without the prebuilt copy it
     # exits. Started for real and fetched, with the [web] extra a user installs.
-    r = run("uv", "pip", "install", f"{WHEEL}[web]")
-    check(r.returncode == 0, "[web] extra installs", r.stderr[-300:] if r.returncode else "")
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]
-    log = tmp / "dashboard.log"
-    # Own session so the server and anything it spawns are stopped together.
-    # Not `hermes dashboard --stop`: that stops every Hermes web server on the
-    # machine, not just this one.
-    proc = subprocess.Popen([str(hermes), "dashboard", "--port", str(port), "--no-open"],
-                            cwd=cwd, env=env, stdout=log.open("w"), stderr=subprocess.STDOUT,
-                            start_new_session=True)
-    page = asset = ""
-    try:
-        for _ in range(120):
-            if proc.poll() is not None:
-                break
-            try:
-                page = urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2).read().decode()
-                break
-            except OSError:
-                time.sleep(0.5)
-        js = re.search(r'src="(/assets/[^"]+\.js)"', page)
-        if js:
-            asset = str(urllib.request.urlopen(f"http://127.0.0.1:{port}{js.group(1)}", timeout=5).status)
-    finally:
-        if proc.poll() is None:
-            os.killpg(proc.pid, signal.SIGTERM)
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
-    check("<title>" in page and asset == "200", "`hermes dashboard` serves the UI without npm",
-          f"script {asset or 'not loaded'}" if page else log.read_text()[-300:])
+    if "dashboard" not in FRONTENDS:
+        print("  skip `hermes dashboard` — not bundled in this release")
+    else:
+        r = run("uv", "pip", "install", f"{WHEEL}[web]")
+        check(r.returncode == 0, "[web] extra installs", r.stderr[-300:] if r.returncode else "")
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]
+        log = tmp / "dashboard.log"
+        # Own session so the server and anything it spawns are stopped together.
+        # Not `hermes dashboard --stop`: that stops every Hermes web server on the
+        # machine, not just this one.
+        proc = subprocess.Popen([str(hermes), "dashboard", "--port", str(port), "--no-open"],
+                                cwd=cwd, env=env, stdout=log.open("w"), stderr=subprocess.STDOUT,
+                                start_new_session=True)
+        page = asset = ""
+        try:
+            for _ in range(120):
+                if proc.poll() is not None:
+                    break
+                try:
+                    page = urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2).read().decode()
+                    break
+                except OSError:
+                    time.sleep(0.5)
+            js = re.search(r'src="(/assets/[^"]+\.js)"', page)
+            if js:
+                asset = str(urllib.request.urlopen(f"http://127.0.0.1:{port}{js.group(1)}", timeout=5).status)
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGTERM)
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(proc.pid, signal.SIGKILL)
+        check("<title>" in page and asset == "200", "`hermes dashboard` serves the UI without npm",
+              f"script {asset or 'not loaded'}" if page else log.read_text()[-300:])
 
 if failures:
     sys.exit(f"[verify] Python {PYV}: {len(failures)} check(s) failed")
