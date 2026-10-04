@@ -103,6 +103,12 @@ text = PP.read_text(encoding="utf-8")
 self_refs = text.count('"hermes-agent[')
 PP.write_text(text.replace('"hermes-agent[', f'"{DIST_NAME}['), encoding="utf-8")
 ok(f"pyproject.toml: {self_refs} self-referencing extras renamed")
+# The one-line summary shows in search results and `pip search`-style listings,
+# where the README does not. Upstream's tagline under the horo-next name reads
+# as the official package — found on the first TestPyPI upload.
+sub_once("pyproject.toml", r'^description = ".*"$',
+         'description = "Unofficial PyPI distribution of Hermes Agent by Nous Research"',
+         "description")
 shutil.copy(HERE.parent / "pypi" / "README.md", ROOT / "README-PYPI.md")
 edit("pyproject.toml", 'readme = "README.md"', 'readme = "README-PYPI.md"')
 
@@ -210,6 +216,8 @@ project = meta["project"]
 
 if project.get("name") != DIST_NAME:
     fail(f"name is {project.get('name')!r}")
+if "Unofficial" not in project.get("description", ""):
+    fail(f"description does not say it is unofficial: {project.get('description')!r}")
 if project.get("version") != EXPECTED_VERSION:
     fail(f"version {project.get('version')!r} != expected {EXPECTED_VERSION!r}")
 init_version = re.search(r'^__version__\s*=\s*"([^"]+)"',
