@@ -16,9 +16,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
+import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.request
 from pathlib import Path
 
 WHEEL, PYV, EXPECTED = Path(sys.argv[1]).resolve(), sys.argv[2], sys.argv[3]
@@ -83,6 +89,9 @@ from hermes_cli import banner
 fake = Path(__import__("os").environ["HERMES_HOME"]) / "hermes-agent" / ".git"
 fake.mkdir(parents=True)
 out["adopted_home_checkout"] = str(banner._resolve_repo_dir())
+out["web_dist"] = (Path(hermes_cli.__file__).parent / "web_dist" / "index.html").is_file()
+from hermes_cli.main_tui_launch import _find_bundled_tui
+out["tui"] = str(_find_bundled_tui())
 print("JSON" + json.dumps(out))
 '''
     r = run(str(py), "-c", probe)
@@ -108,6 +117,11 @@ print("JSON" + json.dumps(out))
         check(data["adopted_home_checkout"] == "None",
               "a git checkout in HERMES_HOME is not adopted as this install",
               data["adopted_home_checkout"])
+        check(data["web_dist"], "prebuilt dashboard ships in the wheel")
+        check(data["tui"].endswith("tui_dist/entry.js"), "prebuilt TUI resolves from the wheel", data["tui"])
+        if data["tui"] != "None" and shutil.which("node"):
+            r = run("node", "--check", data["tui"])
+            check(r.returncode == 0, "TUI bundle parses under node", r.stderr[-200:])
 
     r = run(str(hermes), "--version")
     check(r.returncode == 0 and EXPECTED in r.stdout, "`hermes --version`", r.stdout.strip().splitlines()[0] if r.stdout else r.stderr[-200:])
@@ -131,6 +145,43 @@ print("JSON" + json.dumps(out))
     r = run(str(hermes), "skills", "list")
     builtin = next((ln for ln in r.stdout.splitlines() if "builtin" in ln and "enabled" in ln), "")
     check("0 builtin" not in builtin and builtin != "", "`hermes skills list` shows builtin skills", builtin.strip())
+
+    # From a source checkout `hermes dashboard` builds the front end with npm
+    # first; from a wheel there is no source, so without the prebuilt copy it
+    # exits. Started for real and fetched, with the [web] extra a user installs.
+    r = run("uv", "pip", "install", f"{WHEEL}[web]")
+    check(r.returncode == 0, "[web] extra installs", r.stderr[-300:] if r.returncode else "")
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]
+    log = tmp / "dashboard.log"
+    # Own session so the server and anything it spawns are stopped together.
+    # Not `hermes dashboard --stop`: that stops every Hermes web server on the
+    # machine, not just this one.
+    proc = subprocess.Popen([str(hermes), "dashboard", "--port", str(port), "--no-open"],
+                            cwd=cwd, env=env, stdout=log.open("w"), stderr=subprocess.STDOUT,
+                            start_new_session=True)
+    page = asset = ""
+    try:
+        for _ in range(120):
+            if proc.poll() is not None:
+                break
+            try:
+                page = urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2).read().decode()
+                break
+            except OSError:
+                time.sleep(0.5)
+        js = re.search(r'src="(/assets/[^"]+\.js)"', page)
+        if js:
+            asset = str(urllib.request.urlopen(f"http://127.0.0.1:{port}{js.group(1)}", timeout=5).status)
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+    check("<title>" in page and asset == "200", "`hermes dashboard` serves the UI without npm",
+          f"script {asset or 'not loaded'}" if page else log.read_text()[-300:])
 
 if failures:
     sys.exit(f"[verify] Python {PYV}: {len(failures)} check(s) failed")

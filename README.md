@@ -21,6 +21,7 @@ committed here**. The default branch, `horo`, holds only the tooling:
 |---|---|
 | `overlay/horo_overlay.py` | Packaging changes applied to an upstream checkout |
 | `overlay/security_bump.py` | Raises direct dependencies that have a published vulnerability fix |
+| `overlay/build_frontends.py` | Prebuilds the dashboard and TUI into the package (needs Node 22) |
 | `overlay/verify_wheel.py` | Installs the wheel into a clean venv and checks it works |
 | `overlay/audit.py` | Checks the Linux / Python 3.12 dependency set against OSV |
 | `overlay/extras_map.py` | Maps each package to the features (core or extras) that need it |
@@ -94,6 +95,7 @@ One-time setup (repository settings and PyPI):
 git clone --depth 1 --branch v2026.9.24 https://github.com/NousResearch/hermes-agent.git upstream
 python overlay/horo_overlay.py upstream 0.21.5
 python overlay/security_bump.py upstream --notes release-notes.md
+python overlay/build_frontends.py upstream --notes release-notes.md
 (cd upstream && uv build --wheel --out-dir ../dist)
 python overlay/verify_wheel.py dist/horo_next-0.21.5-py3-none-any.whl 3.12 0.21.5
 ```

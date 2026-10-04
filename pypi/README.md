@@ -16,6 +16,7 @@ The command is `hermes` and the data directory is `~/.hermes`, as upstream. Do n
 Packaging only. Product behaviour is upstream's.
 
 - Bundled skills and locales are packaged inside the wheel.
+- The web dashboard and the terminal UI are prebuilt into the wheel, so they never run `npm` on your machine. `hermes dashboard` needs `pip install "horo-next[web]"`; `hermes --tui` needs a `node` binary on `PATH`.
 - `hermes update` points to `pip install -U horo-next`.
 - Direct dependencies with a published vulnerability fix are raised to the fixed version. Each release notes which.
 - Python 3.11 is kept supported; the upper bound follows each upstream release.

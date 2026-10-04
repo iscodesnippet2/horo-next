@@ -147,7 +147,11 @@ for name in ASSETS:
     # LICENSE files travel with each skill: several are third-party MIT.
     shutil.copytree(src, bundle / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 ok(f"bundled {len(ASSETS)} asset dirs into hermes_cli/_bundled/")
-sub_once("pyproject.toml", r'^hermes_cli = \[', 'hermes_cli = ["_bundled/**/*", ', "package-data")
+# web_dist/ and tui_dist/ are the prebuilt dashboard and TUI, written by
+# build_frontends.py before the wheel is built. Upstream already looks for them
+# there; they are .gitignored build output, so its config never packaged them.
+sub_once("pyproject.toml", r'^hermes_cli = \[',
+         'hermes_cli = ["_bundled/**/*", "web_dist/**/*", "tui_dist/*", ', "package-data")
 
 # _packaged_dir returned the caller's source-checkout default without checking
 # it exists. From a wheel that default is site-packages/skills — missing — so

@@ -1,6 +1,6 @@
 # Build one upstream Hermes Agent release as horo-next and publish it.
 #
-#   upstream tag  ──overlay──▶  security bump  ──▶  wheel  ──▶  verify on every
+#   upstream tag  ──overlay──▶  security bump  ──▶  front ends  ──▶  wheel  ──▶  verify on every
 #   supported Python  ──▶  TestPyPI  ──▶  (approval)  ──▶  PyPI + GitHub release
 #
 # Upstream code is never committed to this repository. Each run clones the tag
@@ -41,6 +41,12 @@ jobs:
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
+      # Builds the dashboard and TUI into the wheel, so the target machine
+      # never runs npm for them. Upstream's package.json engines: ^22.22 || ^24.11.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
       - name: Clone the upstream release
         run: |
           git clone --depth 1 --branch "${{ inputs.upstream_tag }}" \
@@ -57,6 +63,9 @@ jobs:
         run: |
           uv export --frozen --no-dev --no-emit-project --no-hashes --format requirements-txt \
             > "../requirements-${{ inputs.version }}.txt"
+
+      - name: Prebuild the dashboard and TUI
+        run: uv run python overlay/build_frontends.py upstream --notes release-notes.md
 
       - name: Build the wheel
         working-directory: upstream
