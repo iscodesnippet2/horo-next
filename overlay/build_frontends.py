@@ -37,7 +37,9 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -49,7 +51,24 @@ FRONTENDS = {"dashboard": ("web", "web_dist"), "tui": ("ui-tui", "tui_dist")}
 COOLDOWN_DAYS = 14
 # Package manifests whose pins a bump may edit: the root and every workspace a
 # front end builds from (web imports apps/shared).
-MANIFESTS = ["package.json", "web/package.json", "ui-tui/package.json", "apps/shared/package.json"]
+# npm 11: npm 10's resolver crashes ("reading 'edgesOut'") re-locking this
+# monorepo after a pin moves (vitest 4.1.10 → 4.1.11). Upstream's engines allow
+# npm <11.10 || >=11.17. Override like HORO_UV, e.g. HORO_NPM="npx -y npm@11.21.0".
+NPM = shlex.split(os.environ.get("HORO_NPM", "npm"))
+
+
+def manifests(root: Path) -> list[str]:
+    """The root and every workspace package.json. A pin has to move in all of
+    them together: one lock serves the whole monorepo, and two workspaces
+    pinning different versions of a package with exact-version peers (vitest)
+    cannot be resolved."""
+    globs = json.loads((root / "package.json").read_text(encoding="utf-8")).get("workspaces", [])
+    out = ["package.json"]
+    for g in globs:
+        for d in sorted(root.glob(g)):
+            if (d / "package.json").is_file():
+                out.append(str((d / "package.json").relative_to(root)))
+    return out
 
 
 def run(cmd: list[str], cwd: Path) -> None:
@@ -89,11 +108,30 @@ def satisfies(version: str, rng: str) -> bool:
 
 
 # ── audit and bump ──────────────────────────────────────────────────────────
-def audit(root: Path, workspace: str) -> dict:
+def locked_versions(root: Path, name: str) -> set[str]:
+    pkgs = json.loads((root / "package-lock.json").read_text(encoding="utf-8")).get("packages", {})
+    return {v["version"] for k, v in pkgs.items()
+            if k.endswith("node_modules/" + name) and isinstance(v, dict) and "version" in v}
+
+
+def forget(root: Path, names: set[str]) -> None:
+    """Drop these packages from the lock so the next resolve picks them afresh.
+    npm keeps a locked version that an edited override no longer allows and
+    reports the tree "up to date"."""
+    lock = root / "package-lock.json"
+    data = json.loads(lock.read_text(encoding="utf-8"))
+    pkgs = data.get("packages", {})
+    for k in [k for k in pkgs if any(k.endswith("node_modules/" + n) for n in names)]:
+        del pkgs[k]
+    lock.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def audit(root: Path, workspace: str, dev: bool = False) -> dict:
     """{package: {"installed": [...], "ranges": [...], "advisories": [...]}} for
-    the runtime dependencies of one workspace."""
-    r = subprocess.run(["npm", "audit", "--json", "--omit=dev", f"--workspace={workspace}"],
-                       cwd=root, capture_output=True, text=True)
+    one workspace: runtime dependencies, or with `dev` the build and test
+    tools too."""
+    cmd = [*NPM, "audit", "--json", f"--workspace={workspace}"] + ([] if dev else ["--omit=dev"])
+    r = subprocess.run(cmd, cwd=root, capture_output=True, text=True)
     try:
         vulns = json.loads(r.stdout)["vulnerabilities"]
     except (ValueError, KeyError):
@@ -104,11 +142,10 @@ def audit(root: Path, workspace: str) -> dict:
         advisories = [x for x in v.get("via", []) if isinstance(x, dict)]
         if not advisories:
             continue  # only flagged because it depends on a flagged package
-        installed = set()
-        for node in v.get("nodes", []):
-            pj = root / node / "package.json"
-            if pj.is_file():
-                installed.add(json.loads(pj.read_text(encoding="utf-8"))["version"])
+        # From the lock, not audit's "nodes": those list one copy, and a
+        # package installed in two majors (undici 6 for the TUI, 7 for jsdom)
+        # would have the other one missed.
+        installed = locked_versions(root, name)
         out[name] = {"installed": sorted(installed), "ranges": [a["range"] for a in advisories],
                      "advisories": [f"{a.get('severity')} {a.get('url', '').rsplit('/', 1)[-1]} "
                                     f"{a.get('title', '')}" for a in advisories]}
@@ -118,7 +155,7 @@ def audit(root: Path, workspace: str) -> dict:
 def nearest_fix(name: str, installed: str, ranges: list[str]) -> tuple[str | None, str]:
     """Smallest release above `installed`, same major, outside every advisory
     range, older than the cooldown. Returns (version, reason-if-none)."""
-    r = subprocess.run(["npm", "view", name, "time", "--json"], capture_output=True, text=True)
+    r = subprocess.run([*NPM, "view", name, "time", "--json"], capture_output=True, text=True)
     try:
         times = json.loads(r.stdout)
     except ValueError:
@@ -142,62 +179,105 @@ def nearest_fix(name: str, installed: str, ranges: list[str]) -> tuple[str | Non
     return None, f"no fixed release in major {cur[0] if cur else '?'}"
 
 
-def pin(root: Path, name: str, version: str) -> str:
-    """Raise `name` to `version`: upstream's own override or exact pin if it has
-    one (an override that disagrees with a direct pin is an npm error), else a
-    root override."""
+def major_of(spec: str) -> int | None:
+    m = re.search(r"(\d+)", spec)
+    return int(m.group(1)) if m else None
+
+
+def pin(root: Path, name: str, major: int, version: str, allow_new: bool) -> str | None:
+    """Raise the `major` line of `name` to `version`, where upstream already
+    controls it: root overrides (`name` or `name@^major`, as upstream writes
+    them for packages installed in two majors) and exact pins in the front
+    ends' manifests. Other majors of the same package are left alone — the
+    TUI uses undici 6 while jsdom pulls undici 7.
+
+    Only when upstream controls nothing for it, and `allow_new`, is a root
+    override `name@^major` added. Returns how it was raised, or None."""
+    edited = []
     rootpj = root / "package.json"
     data = json.loads(rootpj.read_text(encoding="utf-8"))
-    if name in data.get("overrides", {}):
-        data["overrides"][name] = version
+    ov = data.get("overrides", {})
+    for key, val in list(ov.items()):
+        if not isinstance(val, str):
+            continue
+        if key == name and major_of(val) == major:
+            ov[key] = version
+            edited.append(f"override {key}")
+        elif key.startswith(name + "@") and major_of(key[len(name) + 1:]) == major:
+            ov[key] = version
+            edited.append(f"override {key}")
+    if edited:
         rootpj.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        return "upstream override"
-    edited = []
-    for rel in MANIFESTS:
+    for rel in manifests(root):
         pj = root / rel
         if not pj.is_file():
             continue
         d = json.loads(pj.read_text(encoding="utf-8"))
         hit = [s for s in ("dependencies", "devDependencies", "optionalDependencies")
-               if name in d.get(s, {})]
+               if isinstance(d.get(s, {}).get(name), str) and major_of(d[s][name]) == major]
         for section in hit:
             d[section][name] = version
         if hit:
             pj.write_text(json.dumps(d, indent=2) + "\n", encoding="utf-8")
-            edited.append(rel)
+            edited.append(f"pin in {rel}")
     if edited:
-        return "pin in " + ", ".join(edited)
-    data.setdefault("overrides", {})[name] = version
+        return ", ".join(edited)
+    if not allow_new:
+        return None
+    data = json.loads(rootpj.read_text(encoding="utf-8"))
+    data.setdefault("overrides", {})[f"{name}@^{major}"] = version
     rootpj.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return "new root override"
+    return f"new override {name}@^{major}"
 
 
 def install(root: Path, locked: bool) -> None:
     workspaces = [f"--workspace={w}" for w, _ in FRONTENDS.values()]
-    verb = "ci" if locked else "install"
-    run(["npm", verb, "--ignore-scripts", "--no-audit", "--no-fund",
+    if not locked:
+        # Re-resolve the lock for the whole monorepo first, then install from
+        # it: a workspace-filtered `npm install` resolves only part of the tree.
+        run([*NPM, "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"], root)
+    run([*NPM, "ci", "--ignore-scripts", "--no-audit", "--no-fund",
          "--include-workspace-root=false", *workspaces], root)
 
 
 def bump(root: Path) -> list[str]:
-    notes = []
-    findings: dict[str, dict] = {}
-    for ws, _ in FRONTENDS.values():
-        for name, f in audit(root, ws).items():
-            findings.setdefault(name, f)
-    changed = False
-    for name, f in sorted(findings.items()):
-        # Several copies may be installed; the fix must clear the highest.
-        installed = max(f["installed"], key=lambda v: vtuple(v) or (0,)) if f["installed"] else "0.0.0"
-        fix, why = nearest_fix(name, installed, f["ranges"])
-        if fix:
-            how = pin(root, name, fix)
-            notes.append(f"- {name} {installed} → {fix} ({how}): {'; '.join(f['advisories'])}")
-            changed = True
-        else:
-            notes.append(f"- {name} {installed}: not raised — {why}")
-    if changed:
-        install(root, locked=False)  # re-resolves package-lock.json with the new pins
+    """Raise everything installed, build and test tools included. Those never
+    reach the wheel, but they run in the build — and the goal is no known
+    advisory anywhere in the pipeline. Whether a front end is bundled is still
+    decided by its runtime dependencies alone (see main).
+
+    Two rounds. The first only moves pins and overrides upstream already has;
+    raising a parent often fixes its children (vitest brings @vitest/mocker),
+    and an override that fights a parent's exact pin breaks npm's resolver.
+    The second adds overrides for whatever is still flagged."""
+    notes, unfixed = [], {}
+    for allow_new in (False, True):
+        findings: dict[str, dict] = {}
+        for ws, _ in FRONTENDS.values():
+            for name, f in audit(root, ws, dev=True).items():
+                findings.setdefault(name, f)
+        changed = set()
+        unfixed = {}
+        for name, f in sorted(findings.items()):
+            # One package may be installed in several majors; each is its own line.
+            by_major: dict[int, str] = {}
+            for v in f["installed"]:
+                vt = vtuple(v)
+                if vt and any(satisfies(v, rg) for rg in f["ranges"]):
+                    if vt[0] not in by_major or vt > vtuple(by_major[vt[0]]):
+                        by_major[vt[0]] = v
+            for major, installed in sorted(by_major.items()):
+                fix, why = nearest_fix(name, installed, f["ranges"])
+                how = pin(root, name, major, fix, allow_new) if fix else None
+                if how:
+                    notes.append(f"- {name} {installed} → {fix} ({how}): {'; '.join(f['advisories'])}")
+                    changed.add(name)
+                elif not fix:
+                    unfixed[f"{name} {installed}"] = why
+        if changed:
+            forget(root, changed)
+            install(root, locked=False)  # re-resolves package-lock.json with the new pins
+    notes += [f"- {k}: not raised — {why}" for k, why in sorted(unfixed.items())]
     return notes
 
 
@@ -235,7 +315,7 @@ def main() -> int:
     args = ap.parse_args()
     root = args.checkout.resolve()
 
-    if not shutil.which("npm") or not shutil.which("node"):
+    if not shutil.which(NPM[0]) or not shutil.which("node"):
         sys.exit("[frontends] node and npm are required")
 
     install(root, locked=True)
@@ -262,6 +342,15 @@ def main() -> int:
         print(f"[frontends] ok   {name} → hermes_cli/{dirname} ({size:.1f} MB)")
         notes.append(f"- {name}: included (npm audit of its runtime dependencies: no advisories)")
         bundled.append(name)
+
+    # Build and test tools left unfixed: reported — they are not in the wheel.
+    tools = {}
+    for ws, _ in FRONTENDS.values():
+        runtime = audit(root, ws)
+        tools.update({p: f for p, f in audit(root, ws, dev=True).items() if p not in runtime})
+    notes.append("- build and test tools (not in the wheel): " + (
+        "no advisories" if not tools else "advisories remain in " + ", ".join(
+            f"{p} {', '.join(f['installed'])}" for p, f in sorted(tools.items()))))
 
     meta_path = root / "horo-build.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}

@@ -95,7 +95,7 @@ One-time setup (repository settings and PyPI):
 git clone --depth 1 --branch v2026.9.24 https://github.com/NousResearch/hermes-agent.git upstream
 python overlay/horo_overlay.py upstream 0.21.5
 python overlay/security_bump.py upstream --notes release-notes.md
-python overlay/build_frontends.py upstream --notes release-notes.md
+HORO_NPM="npx -y npm@11.21.0" python overlay/build_frontends.py upstream --notes release-notes.md
 (cd upstream && uv build --wheel --out-dir ../dist)
 python overlay/verify_wheel.py dist/horo_next-0.21.5-py3-none-any.whl 3.12 0.21.5
 ```

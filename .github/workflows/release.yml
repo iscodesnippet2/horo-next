@@ -67,6 +67,10 @@ jobs:
             > "../requirements-${{ inputs.version }}.txt"
 
       - name: Prebuild the dashboard and TUI
+        # npm 11: npm 10 (bundled with Node 22) crashes re-locking this
+        # monorepo after a pin moves. Upstream's engines allow >=11.17.
+        env:
+          HORO_NPM: npx -y npm@11.21.0
         run: uv run python overlay/build_frontends.py upstream --notes release-notes.md
 
       - name: Build the wheel
