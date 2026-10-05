@@ -76,9 +76,8 @@ jobs:
       # The air-gapped target is Linux / CPython 3.12. Two install paths reach
       # it with different versions, so both are audited: the offline list
       # (pinned by the lock) and a fresh resolution of the wheel (what
-      # `pip install horo-next` picks today). A core advisory on either holds
-      # the release — a CVE-filtering mirror refuses the whole install if one
-      # core package is blocked. Extras are reported, not held.
+      # `pip install horo-next` picks today). Any advisory holds the release,
+      # extras included: the goal is zero known advisories in what ships.
       - name: Audit core dependencies for Linux / Python 3.12
         run: |
           echo "## Advisory audit — Linux / Python 3.12" >> release-notes.md
@@ -90,13 +89,13 @@ jobs:
           uv run --with packaging python overlay/audit.py online-core.txt \
             "Core, pip install" --fail --notes release-notes.md
 
-      - name: Report advisories in extras
+      - name: Audit all extras for Linux / Python 3.12
         run: |
           (cd upstream && uv export --frozen --no-dev --all-extras --no-emit-project \
             --no-hashes --format requirements-txt) > "requirements-${{ inputs.version }}-all-extras.txt"
           uv run --with packaging python overlay/audit.py \
             "requirements-${{ inputs.version }}-all-extras.txt" \
-            "All extras, offline list" --notes release-notes.md
+            "All extras, offline list" --fail --notes release-notes.md
 
       # Files for airgap/probe.py, attached to the GitHub release so the
       # air-gapped site fetches everything it needs from one page.

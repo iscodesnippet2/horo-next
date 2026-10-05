@@ -23,12 +23,23 @@ Scope is DIRECT dependencies only, and that is deliberate:
 Pins stay exact. Only the version moves, and only to the lowest version that
 fixes every advisory, so the change is as small as the fix allows.
 
-Exits non-zero, holding the release, when an advisory has no fix or the
-raised version conflicts with another requirement (detected by re-locking).
+Upstream's uv cooldown (exclude-newer = "14 days") hides a fix younger than
+the window. Upstream handles that by hand with a per-package exception (h2,
+aiohttp, cryptography in v0.21.5). This does the same, narrowly: the exception
+admits releases up to the fix's own upload time, not `false`, so anything
+published after the fix still waits out the cooldown.
+
+The goal is zero known advisories in everything a release ships, extras
+included. Exits non-zero, holding the release, when any advisory remains:
+no fix exists, the fix conflicts with another requirement, or re-locking fails.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
+import os
+import re
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -71,6 +82,50 @@ def pypi_releases(name: str) -> list[Version]:
             out.append(v)
         _RELEASES[name] = sorted(out)
     return _RELEASES[name]
+
+
+def uploaded(name: str, version: Version) -> dt.datetime | None:
+    try:
+        with urllib.request.urlopen(f"https://pypi.org/pypi/{name}/{version}/json", timeout=60) as r:
+            return max(dt.datetime.fromisoformat(u["upload_time_iso_8601"].replace("Z", "+00:00"))
+                       for u in json.load(r)["urls"])
+    except Exception:
+        return None
+
+
+def cooldown_days() -> int | None:
+    m = re.search(r'^exclude-newer\s*=\s*"(\d+)\s*days?"', PP.read_text(encoding="utf-8"), re.M)
+    return int(m.group(1)) if m else None
+
+
+def in_cooldown(name: str, version: Version) -> dt.datetime | None:
+    """The upload time of `version` if upstream's cooldown hides it, else None."""
+    days, up = cooldown_days(), uploaded(name, version)
+    if days and up and up + dt.timedelta(days=days) > dt.datetime.now(dt.timezone.utc):
+        return up
+    return None
+
+
+exceptions: list[str] = []
+
+
+def grant_exception(name: str, version: Version, up: dt.datetime) -> bool:
+    """Admit `name` up to the fix's upload time, as upstream does by hand.
+    An existing entry for the package (often `false`) is already wider: kept."""
+    text = PP.read_text(encoding="utf-8")
+    header = "[tool.uv.exclude-newer-package]\n"
+    if header not in text:
+        return False
+    table = text.split(header, 1)[1].split("\n[", 1)[0]
+    if re.search(rf"^{re.escape(name)}\s*=", table, re.M):
+        return True
+    until = (up + dt.timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    line = (f'{name} = "{until}"  # horo-next: security fix {version} '
+            f'(uploaded {up:%Y-%m-%d}) is inside the cooldown\n')
+    PP.write_text(text.replace(header, header + line, 1), encoding="utf-8")
+    exceptions.append(f"`{name}` admitted up to {until} for the fix {version}")
+    print(f"[security] cooldown exception: {name} up to {until} (fix {version})")
+    return True
 
 
 def nearest_fix(vuln: dict, name: str, current: Version) -> Version | None:
@@ -158,6 +213,12 @@ changes = applied
 PP.write_text(text, encoding="utf-8")
 
 for _, _, name, before, after, ids in changes:
+    target = Version(after.lstrip("=>"))
+    up = in_cooldown(canonicalize_name(name), target)
+    if up and not grant_exception(canonicalize_name(name), target, up):
+        held.append(f"{name}: fix {target} is inside the cooldown and pyproject.toml "
+                    f"has no [tool.uv.exclude-newer-package] table to except it")
+for _, _, name, before, after, ids in changes:
     print(f"[security] {name}: {before} -> {after}  ({len(ids)} advisories: {', '.join(ids[:4])}{' …' if len(ids) > 4 else ''})")
 for h in held:
     print(f"[security] HOLD {h}")
@@ -173,8 +234,6 @@ if not held:
     # The uv on PATH (setup-uv in CI). Override with HORO_UV, e.g.
     # HORO_UV="uvx --from uv@0.12.22 uv", where the local uv predates
     # upstream's lockfile format.
-    import os
-    import shlex
     uv = shlex.split(os.environ.get("HORO_UV", "uv"))
     r = subprocess.run([*uv, "lock"], cwd=ROOT, capture_output=True, text=True)
     if r.returncode != 0:
@@ -193,11 +252,8 @@ if not held:
 #
 # So vulnerable transitives are upgraded IN THE LOCK, never as floors in the
 # wheel. Online installs are unchanged; the offline list becomes patched.
-# What cannot move (another requirement caps it) is reported, not held: the
-# wheel itself is fine, and the cause is a constraint we do not own.
-import os
-import shlex
-
+# A fix hidden only by the cooldown gets the same narrow exception as a direct
+# one. Whatever still cannot move holds the release.
 uv = shlex.split(os.environ.get("HORO_UV", "uv"))
 lingering: list[str] = []
 transitive_upgraded: list[str] = []
@@ -232,45 +288,18 @@ def vulnerable(pkgs: dict[str, str]) -> dict[str, list[str]]:
     return found
 
 
-def why_not_upgraded(name: str, version: str) -> str:
-    """Say why a fixed version exists but the lock did not take it.
-
-    Upstream's [tool.uv] exclude-newer is a cooldown — uv ignores releases
-    younger than the window, so a freshly published (possibly compromised)
-    version is not adopted until it has aged. A security fix inside that
-    window is held back by design, not by a conflict. Upstream grants such
-    fixes temporary per-package exceptions by hand; this does not do so
-    automatically, because bypassing the cooldown on every advisory would
-    remove half of the defence the exact pins are part of.
-    """
-    import datetime as dt
+def fix_for(name: str, version: str) -> Version | None:
+    """The version clearing every advisory on name==version, or None."""
     fix = None
     for v in osv(name, version):
         if not v.get("withdrawn"):
             f = nearest_fix(v, name, Version(version))
-            if f and (fix is None or f > fix):
-                fix = f
-    if fix is None:
-        return "no fixed version published"
-    major = "a major-version change, " if fix.major != Version(version).major else ""
-    window = re.search(r'^exclude-newer\s*=\s*"(\d+)\s*days?"',
-                       PP.read_text(encoding="utf-8"), re.M)
-    try:
-        with urllib.request.urlopen(f"https://pypi.org/pypi/{name}/{fix}/json", timeout=60) as r:
-            uploaded = min(dt.datetime.fromisoformat(u["upload_time_iso_8601"].replace("Z", "+00:00"))
-                           for u in json.load(r)["urls"])
-    except Exception:
-        uploaded = None
-    if window and uploaded:
-        clears = uploaded + dt.timedelta(days=int(window.group(1)))
-        if clears > dt.datetime.now(dt.timezone.utc):
-            return (f"fix {fix} ({major}published {uploaded:%Y-%m-%d}) is inside upstream's "
-                    f"{window.group(1)}-day exclude-newer cooldown; it clears {clears:%Y-%m-%d} "
-                    f"and the next build after that picks it up")
-    return f"fix {fix} ({major}released) is excluded by another requirement's version cap"
+            if f is None:
+                return None
+            fix = f if fix is None or f > fix else fix
+    return fix
 
 
-import re  # noqa: E402
 
 if not held:
     direct = {canonicalize_name(Requirement(s).name) for s in specs}
@@ -284,13 +313,30 @@ if not held:
         else:
             after = locked_set()
             still = vulnerable({n: after[n] for n in targets if n in after})
+            # Fixes hidden only by the cooldown: except them narrowly, lock again.
+            retry = []
+            for n in still:
+                fix = fix_for(n, after[n])
+                up = in_cooldown(n, fix) if fix else None
+                if up and grant_exception(n, fix, up):
+                    retry.append(n)
+            if retry:
+                args = [a for n in retry for a in ("--upgrade-package", n)]
+                r = subprocess.run([*uv, "lock", *args], cwd=ROOT, capture_output=True, text=True)
+                if r.returncode != 0:
+                    held.append("uv lock failed after cooldown exceptions:\n" + r.stderr[-1500:])
+                after = locked_set()
+                still = vulnerable({n: after[n] for n in targets if n in after})
             for n in targets:
                 if n not in after:
                     continue
                 if n in still:
-                    reason = why_not_upgraded(n, after[n])
-                    lingering.append(f"`{n}` {after[n]} — {reason}")
-                    print(f"[security] WARN transitive {n}=={after[n]} still has advisories: {reason}")
+                    fix = fix_for(n, after[n])
+                    why = ("no fixed version published" if fix is None else
+                           f"fix {fix} is excluded by another requirement's version cap")
+                    lingering.append(f"`{n}` {after[n]} — {why}")
+                    held.append(f"transitive {n}=={after[n]} still has advisories: {why}")
+                    print(f"[security] HOLD transitive {n}=={after[n]}: {why}")
                 else:
                     transitive_upgraded.append(f"`{n}` {before[n]} → {after[n]}")
                     print(f"[security] transitive {n}: {before[n]} -> {after[n]} (lock only)")
@@ -305,8 +351,12 @@ if NOTES:
         lines += ["", "Transitive dependencies upgraded in the offline dependency list "
                       "(the wheel does not pin these):", ""]
         lines += [f"- {t}" for t in transitive_upgraded]
+    if exceptions:
+        lines += ["", "Cooldown exceptions (upstream's 14-day uv cooldown hid these fixes; "
+                      "each admits releases only up to the fix itself):", ""]
+        lines += [f"- {e}" for e in exceptions]
     if lingering:
-        lines += ["", "Still carrying advisories (reason given for each):", ""]
+        lines += ["", "Still carrying advisories — release held:", ""]
         lines += [f"- {t}" for t in lingering]
     NOTES.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
