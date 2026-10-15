@@ -114,16 +114,16 @@ def locked_versions(root: Path, name: str) -> set[str]:
             if k.endswith("node_modules/" + name) and isinstance(v, dict) and "version" in v}
 
 
-def forget(root: Path, names: set[str]) -> None:
-    """Drop these packages from the lock so the next resolve picks them afresh.
-    npm keeps a locked version that an edited override no longer allows and
-    reports the tree "up to date"."""
-    lock = root / "package-lock.json"
-    data = json.loads(lock.read_text(encoding="utf-8"))
-    pkgs = data.get("packages", {})
-    for k in [k for k in pkgs if any(k.endswith("node_modules/" + n) for n in names)]:
-        del pkgs[k]
-    lock.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+def relock(root: Path, names: set[str]) -> None:
+    """Move these packages in the lock to what the edited pins and overrides
+    now allow. A plain `npm install` keeps a locked version an edited override
+    no longer allows and reports "up to date". Deleting the entries first, the
+    earlier approach, lost source-map-js entirely: npm did not re-add a package
+    whose only change was a new `name@^N` override, and the dashboard build then
+    failed to find it. `npm update <names>` re-resolves exactly these, every
+    copy (undici also sits under node-gyp)."""
+    run([*NPM, "update", *sorted(names), "--package-lock-only", "--ignore-scripts",
+         "--no-audit", "--no-fund"], root)
 
 
 def audit(root: Path, workspace: str, dev: bool = False) -> dict:
@@ -257,6 +257,7 @@ def bump(root: Path) -> list[str]:
             for name, f in audit(root, ws, dev=True).items():
                 findings.setdefault(name, f)
         changed = set()
+        expected: dict[tuple[str, int], str] = {}
         unfixed = {}
         for name, f in sorted(findings.items()):
             # One package may be installed in several majors; each is its own line.
@@ -270,13 +271,22 @@ def bump(root: Path) -> list[str]:
                 fix, why = nearest_fix(name, installed, f["ranges"])
                 how = pin(root, name, major, fix, allow_new) if fix else None
                 if how:
+                    expected[(name, major)] = fix
                     notes.append(f"- {name} {installed} → {fix} ({how}): {'; '.join(f['advisories'])}")
                     changed.add(name)
                 elif not fix:
                     unfixed[f"{name} {installed}"] = why
         if changed:
-            forget(root, changed)
-            install(root, locked=False)  # re-resolves package-lock.json with the new pins
+            run([*NPM, "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"], root)
+            relock(root, changed)
+            # Fail closed: a raised line must be locked at its fix and nothing
+            # older, and no raised package may have vanished from the lock.
+            for (name, major), fix in sorted(expected.items()):
+                line = {v for v in locked_versions(root, name) if (vtuple(v) or (None,))[0] == major}
+                if not line or any(vtuple(v) < vtuple(fix) for v in line):
+                    sys.exit(f"[frontends] {name} {major}.x not locked at {fix} after re-lock: "
+                             f"{sorted(line) or 'missing from the lock'}")
+            install(root, locked=True)
     notes += [f"- {k}: not raised — {why}" for k, why in sorted(unfixed.items())]
     return notes
 
