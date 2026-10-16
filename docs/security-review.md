@@ -42,6 +42,34 @@ for each, in [`overlay/horo_overlay.py`](../overlay/horo_overlay.py).
    are possible — a finding of yours that is absent from ours is worth
    reporting (see [SECURITY.md](../SECURITY.md)).
 
+## With Sonatype specifically
+
+Two products see horo-next differently:
+
+- **Nexus Repository Firewall** (the proxy that serves PyPI to your network)
+  evaluates each requested component by its coordinates — `horo-next` itself,
+  and each dependency as pip requests it. A component that fails a policy at
+  the proxy stage is quarantined; it is released when the violation is waived
+  ("Proxy Failing" in the Firewall dashboard) or no longer applies.
+  Brand-new releases also go through *Release Integrity*: a new component is
+  rated *Unknown* until reviewed, and only *Pending* or *Suspicious* ratings
+  create violations.
+- **Lifecycle (IQ Server)** evaluates an application. Import the release SBOM
+  with the Third-Party Analysis REST API (`source=cyclonedx`); CycloneDX 1.4–1.7
+  JSON is accepted, so this SBOM (1.5) needs no conversion. This is the step
+  that makes the bundled JavaScript visible: the Firewall evaluates
+  `horo-next` as one package and cannot name the npm packages compiled into it.
+
+Each component appears once in the SBOM (Sonatype processes only the first of
+duplicate components).
+
+Sonatype documentation:
+[Third-Party Analysis REST API](https://help.sonatype.com/iqserver/automating/rest-apis/third-party-scan-rest-api---v2) ·
+[Firewall Quarantine](https://help.sonatype.com/en/firewall-quarantine.html) ·
+[Release Integrity](https://help.sonatype.com/en/release-integrity.html) ·
+[Configure PyPI with Nexus](https://help.sonatype.com/en/configure-pypi-with-nexus.html) ·
+[Repository Firewall Best Practices](https://help.sonatype.com/en/repository-firewall-best-practices.html)
+
 ## Scope of the SBOM
 
 - **Python, core** (`scope: required`, `horo:installed-by=core`): what
