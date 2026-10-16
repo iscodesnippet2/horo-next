@@ -298,9 +298,20 @@ def build(root: Path, name: str) -> Path:
         shutil.rmtree(out, ignore_errors=True)
         # vite writes to hermes_cli/web_dist (web/vite.config.ts outDir).
         run(["node", "../node_modules/typescript/bin/tsc", "-b"], root / "web")
-        run(["node", "../node_modules/vite/bin/vite.js", "build"], root / "web")
+        # `hidden` sourcemaps: the shipped JS is byte-identical to a plain build
+        # (no sourceMappingURL comment). The maps list every module in the
+        # bundle — what sbom.py reads to name the npm packages inside it — and
+        # are moved out of the package so they never ship.
+        run(["node", "../node_modules/vite/bin/vite.js", "build", "--sourcemap", "hidden"], root / "web")
         if not (out / "index.html").is_file():
             sys.exit(f"[frontends] dashboard build produced no {out}/index.html")
+        maps = root / ".horo-sourcemaps" / "web"
+        shutil.rmtree(maps, ignore_errors=True)
+        maps.mkdir(parents=True)
+        for m in out.rglob("*.map"):
+            dest = maps / m.relative_to(out)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(m, dest)
         return out
     # TUI: esbuild writes one self-contained ui-tui/dist/entry.js.
     run(["node", "ui-tui/scripts/build.mjs"], root)

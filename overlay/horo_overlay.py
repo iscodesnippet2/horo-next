@@ -111,6 +111,26 @@ sub_once("pyproject.toml", r'^description = ".*"$',
          "description")
 shutil.copy(HERE.parent / "pypi" / "README.md", ROOT / "README-PYPI.md")
 edit("pyproject.toml", 'readme = "README.md"', 'readme = "README-PYPI.md"')
+# Security review systems (Sonatype and others) follow Project-URL to the
+# source, and read the maintainer to tell this repackaging from the original.
+edit("pyproject.toml", 'authors = [{ name = "Nous Research" }]',
+     'authors = [{ name = "Nous Research" }]\n'
+     'maintainers = [{ name = "horo-next contributors" }]\n'
+     'classifiers = [\n'
+     '  "Operating System :: POSIX :: Linux",\n'
+     '  "Operating System :: MacOS",\n'
+     '  "Programming Language :: Python :: 3",\n'
+     '  "Topic :: Scientific/Engineering :: Artificial Intelligence",\n'
+     ']')
+if "[project.urls]" in PP.read_text(encoding="utf-8"):
+    fail("pyproject.toml: upstream now declares [project.urls]; merge instead of appending")
+else:
+    with PP.open("a", encoding="utf-8") as f:
+        f.write('\n[project.urls]\n'
+                'Source = "https://github.com/iscodesnippet2/horo-next"\n'
+                'Issues = "https://github.com/iscodesnippet2/horo-next/issues"\n'
+                'Upstream = "https://github.com/NousResearch/hermes-agent"\n')
+    ok("pyproject.toml: project URLs")
 
 # ── 3. URL dependencies (postcondition) ──────────────────────────────────
 # PyPI rejects any Requires-Dist carrying a URL, extras included. Those
@@ -222,6 +242,8 @@ if project.get("name") != DIST_NAME:
     fail(f"name is {project.get('name')!r}")
 if "Unofficial" not in project.get("description", ""):
     fail(f"description does not say it is unofficial: {project.get('description')!r}")
+if "Source" not in project.get("urls", {}):
+    fail("no Source URL in project metadata")
 if project.get("version") != EXPECTED_VERSION:
     fail(f"version {project.get('version')!r} != expected {EXPECTED_VERSION!r}")
 init_version = re.search(r'^__version__\s*=\s*"([^"]+)"',

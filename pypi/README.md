@@ -22,6 +22,10 @@ Packaging only. Product behaviour is upstream's.
 - Python 3.11 is kept supported; the upper bound follows each upstream release.
 - Dependencies only available from a URL (not on PyPI) are left out and must be installed separately.
 
+## Security review
+
+Each release is checked to carry no known vulnerability (OSV) in any dependency. The wheel contains a CycloneDX SBOM (`.dist-info/sboms/`) naming every Python dependency and every npm package compiled into the dashboard and TUI, and the license texts of the latter. The GitHub release attaches the same SBOM, the audit report and a hashed requirements file. See [SECURITY.md](https://github.com/iscodesnippet2/horo-next/blob/horo/SECURITY.md).
+
 ## Versions
 
 `horo-next X.Y.Z` is built from upstream `Hermes Agent vX.Y.Z`. A packaging-only fix on the same upstream release is published as `X.Y.Z.postN`.

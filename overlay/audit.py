@@ -1,6 +1,11 @@
 """Audit a resolved dependency list for the air-gapped target against OSV.
 
-    python overlay/audit.py <requirements.txt> <label> [--fail] [--notes FILE]
+    python overlay/audit.py <requirements.txt> <label> [--fail] [--notes FILE] [--json FILE]
+
+`--json` appends this audit to a machine-readable report (one object per
+audited list): when, against which database, for which target, every package
+checked and every advisory found. Security review systems ingest that; the
+release notes are for people.
 
 The air-gapped machines run Linux with CPython 3.12. Only packages whose
 environment markers match that target are checked, because that is what pip
@@ -21,6 +26,7 @@ the risk; the probe run inside the enterprise network is what settles it.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import re
 import sys
@@ -36,6 +42,7 @@ TARGET = {"python_version": "3.12", "python_full_version": "3.12.0", "sys_platfo
 path, label = Path(sys.argv[1]), sys.argv[2]
 fail_on_any = "--fail" in sys.argv
 notes = Path(sys.argv[sys.argv.index("--notes") + 1]) if "--notes" in sys.argv else None
+report = Path(sys.argv[sys.argv.index("--json") + 1]) if "--json" in sys.argv else None
 
 pkgs: dict[str, str] = {}
 for raw in path.read_text(encoding="utf-8").splitlines():
@@ -75,6 +82,7 @@ def describe(vid: str) -> tuple[str, str]:
 
 
 lines = [f"{label}: {len(pkgs)} packages on Linux / Python 3.12, {len(hits)} with known advisories"]
+findings = []
 for (n, v), ids in sorted(hits.items()):
     seen, parts = set(), []
     for vid in ids:
@@ -83,7 +91,22 @@ for (n, v), ids in sorted(hits.items()):
             continue
         seen.add(cve)
         parts.append(f"{cve} {sev}")
+        findings.append({"package": n, "version": v, "id": vid, "cve": cve, "severity": sev})
     lines.append(f"  - {n}=={v}: {', '.join(parts)}")
+
+if report:
+    data = json.loads(report.read_text(encoding="utf-8")) if report.is_file() else {"audits": []}
+    data["audits"].append({
+        "label": label,
+        "source": path.name,
+        "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "database": "OSV (https://osv.dev), ecosystem PyPI",
+        "target": {"os": "Linux", "python": "3.12", "implementation": "CPython"},
+        "packages": [{"name": n, "version": v, "purl": f"pkg:pypi/{n}@{v}"} for n, v in sorted(pkgs.items())],
+        "advisories": findings,
+        "result": "fail" if hits else "pass",
+    })
+    report.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
 
 print("\n".join(lines))
 if notes:

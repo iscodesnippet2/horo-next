@@ -29,6 +29,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+import zipfile
 from pathlib import Path
 
 WHEEL, PYV, EXPECTED = Path(sys.argv[1]).resolve(), sys.argv[2], sys.argv[3]
@@ -54,6 +55,31 @@ with tempfile.TemporaryDirectory() as tmp:
         return subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=600, **kw)
 
     print(f"[verify] Python {PYV}")
+
+    # What a security review system reads from the wheel itself.
+    with zipfile.ZipFile(WHEEL) as z:
+        names = z.namelist()
+        di = next(n.split("/")[0] for n in names if n.endswith(".dist-info/METADATA"))
+        metadata = z.read(f"{di}/METADATA").decode()
+        sbom_names = [n for n in names if n.startswith(f"{di}/sboms/") and n.endswith(".cdx.json")]
+        bom = json.loads(z.read(sbom_names[0])) if sbom_names else {}
+        notices = z.read(f"{di}/licenses/THIRD_PARTY_LICENSES").decode() \
+            if f"{di}/licenses/THIRD_PARTY_LICENSES" in names else ""
+    check("Project-URL: Source" in metadata, "metadata links to the source repository")
+    check(bool(bom) and bom.get("bomFormat") == "CycloneDX", "CycloneDX SBOM embedded (PEP 770)",
+          ", ".join(sbom_names) or "none")
+    if bom:
+        comp = bom["metadata"]["component"]
+        check(comp.get("purl") == f"pkg:pypi/horo-next@{EXPECTED}", "SBOM describes this release", comp.get("purl", ""))
+        npm = [c for c in bom.get("components", []) if c.get("purl", "").startswith("pkg:npm/")]
+        bundled = {p["value"] for c in npm for p in c.get("properties", []) if p["name"] == "horo:bundled-in"}
+        check(bundled == FRONTENDS, "SBOM lists npm packages for exactly the bundled front ends",
+              f"{len(npm)} npm components in {sorted(bundled)}")
+        check(all(c.get("licenses") for c in npm), "every bundled npm package has a license in the SBOM")
+        missing = [c["name"] for c in npm if f"{c['name']}@{c['version']}" not in notices]
+        check(not missing, "third-party notices cover every bundled npm package",
+              f"missing: {missing[:5]}" if missing else f"{len(npm)} entries")
+    check(not [n for n in names if n.endswith(".map")], "no sourcemaps in the wheel")
     r = run("uv", "venv", "--python", PYV, str(venv))
     if r.returncode:
         sys.exit(f"[verify] cannot create a {PYV} venv:\n{r.stderr[-800:]}")

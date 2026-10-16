@@ -60,11 +60,17 @@ jobs:
       - name: Raise vulnerable direct dependencies
         run: uv run --with packaging python overlay/security_bump.py upstream --notes release-notes.md
 
-      - name: Export the resolved dependency set
+      # Exported before the wheel: the SBOM inside it lists them.
+      - name: Export the resolved dependency sets
         working-directory: upstream
         run: |
           uv export --frozen --no-dev --no-emit-project --no-hashes --format requirements-txt \
             > "../requirements-${{ inputs.version }}.txt"
+          uv export --frozen --no-dev --all-extras --no-emit-project --no-hashes \
+            --format requirements-txt > "../requirements-${{ inputs.version }}-all-extras.txt"
+          # With hashes, for `pip install --require-hashes` and mirrors that verify files.
+          uv export --frozen --no-dev --no-emit-project --format requirements-txt \
+            > "../requirements-${{ inputs.version }}-hashes.txt"
 
       - name: Prebuild the dashboard and TUI
         # npm 11: npm 10 (bundled with Node 22) crashes re-locking this
@@ -73,38 +79,61 @@ jobs:
           HORO_NPM: npx -y npm@11.21.0
         run: uv run python overlay/build_frontends.py upstream --notes release-notes.md
 
+      # Files for airgap/probe.py, attached to the GitHub release so the
+      # air-gapped site fetches everything it needs from one page.
+      - name: Map packages to the features that need them
+        run: uv run python overlay/extras_map.py upstream "extras-map-${{ inputs.version }}.json"
+
+      # CycloneDX SBOM naming every Python dependency and every npm package
+      # compiled into the bundles, plus their license notices — so a security
+      # review system can identify what the minified JavaScript contains.
+      - name: Generate the SBOM and third-party notices
+        run: |
+          uv run python overlay/sbom.py generate upstream "${{ inputs.version }}" "${{ inputs.upstream_tag }}" \
+            --core "requirements-${{ inputs.version }}.txt" \
+            --all "requirements-${{ inputs.version }}-all-extras.txt" \
+            --extras-map "extras-map-${{ inputs.version }}.json" --out horo-next.cdx.json
+          cp upstream/THIRD_PARTY_LICENSES THIRD_PARTY_LICENSES.txt
+
       - name: Build the wheel
         working-directory: upstream
         run: uv build --wheel --out-dir ../dist
+
+      - name: Embed the SBOM in the wheel (PEP 770)
+        run: |
+          uv run python overlay/sbom.py embed "dist/horo_next-${{ inputs.version }}-py3-none-any.whl" \
+            horo-next.cdx.json --release-copy "horo-next-${{ inputs.version }}.cdx.json"
+          # Review systems reject an SBOM that does not validate; check both copies.
+          uv run --with 'cyclonedx-python-lib[json-validation]==11.12.0' python -c "
+          import sys
+          from cyclonedx.schema import SchemaVersion
+          from cyclonedx.validation.json import JsonStrictValidator
+          v = JsonStrictValidator(SchemaVersion.V1_5)
+          for f in sys.argv[1:]:
+              err = v.validate_str(open(f).read())
+              sys.exit(f'{f}: invalid CycloneDX 1.5: {err}') if err else print(f, 'valid CycloneDX 1.5')
+          " horo-next.cdx.json "horo-next-${{ inputs.version }}.cdx.json"
 
       # The air-gapped target is Linux / CPython 3.12. Two install paths reach
       # it with different versions, so both are audited: the offline list
       # (pinned by the lock) and a fresh resolution of the wheel (what
       # `pip install horo-next` picks today). Any advisory holds the release,
       # extras included: the goal is zero known advisories in what ships.
-      - name: Audit core dependencies for Linux / Python 3.12
+      # audit-<version>.json is the machine-readable record of the same.
+      - name: Audit dependencies for Linux / Python 3.12
         run: |
           echo "## Advisory audit — Linux / Python 3.12" >> release-notes.md
           echo "dist/horo_next-${{ inputs.version }}-py3-none-any.whl" > online.in
           uv pip compile online.in --python-version 3.12 \
             --python-platform x86_64-manylinux_2_28 --no-header -q -o online-core.txt
+          report="audit-${{ inputs.version }}.json"
           uv run --with packaging python overlay/audit.py "requirements-${{ inputs.version }}.txt" \
-            "Core, offline list" --fail --notes release-notes.md
+            "Core, offline list" --fail --notes release-notes.md --json "$report"
           uv run --with packaging python overlay/audit.py online-core.txt \
-            "Core, pip install" --fail --notes release-notes.md
-
-      - name: Audit all extras for Linux / Python 3.12
-        run: |
-          (cd upstream && uv export --frozen --no-dev --all-extras --no-emit-project \
-            --no-hashes --format requirements-txt) > "requirements-${{ inputs.version }}-all-extras.txt"
+            "Core, pip install" --fail --notes release-notes.md --json "$report"
           uv run --with packaging python overlay/audit.py \
             "requirements-${{ inputs.version }}-all-extras.txt" \
-            "All extras, offline list" --fail --notes release-notes.md
-
-      # Files for airgap/probe.py, attached to the GitHub release so the
-      # air-gapped site fetches everything it needs from one page.
-      - name: Map packages to the features that need them
-        run: uv run python overlay/extras_map.py upstream "extras-map-${{ inputs.version }}.json"
+            "All extras, offline list" --fail --notes release-notes.md --json "$report"
 
       - id: meta
         run: |
@@ -119,8 +148,14 @@ jobs:
             release-notes.md
             requirements-${{ inputs.version }}.txt
             requirements-${{ inputs.version }}-all-extras.txt
+            requirements-${{ inputs.version }}-hashes.txt
             extras-map-${{ inputs.version }}.json
+            horo-next-${{ inputs.version }}.cdx.json
+            THIRD_PARTY_LICENSES.txt
+            audit-${{ inputs.version }}.json
             airgap/probe.py
+            SECURITY.md
+            docs/security-review.md
           if-no-files-found: error
 
   verify:
@@ -193,5 +228,10 @@ jobs:
             dist/*.whl \
             "requirements-${{ inputs.version }}.txt" \
             "requirements-${{ inputs.version }}-all-extras.txt" \
+            "requirements-${{ inputs.version }}-hashes.txt" \
             "extras-map-${{ inputs.version }}.json" \
-            airgap/probe.py
+            "horo-next-${{ inputs.version }}.cdx.json" \
+            THIRD_PARTY_LICENSES.txt \
+            "audit-${{ inputs.version }}.json" \
+            airgap/probe.py \
+            docs/security-review.md
