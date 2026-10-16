@@ -21,6 +21,7 @@ Packaging only. Product behaviour is upstream's.
 - Direct dependencies with a published vulnerability fix are raised to the fixed version. Each release notes which.
 - Python 3.11 is kept supported; the upper bound follows each upstream release.
 - Dependencies only available from a URL (not on PyPI) are left out and must be installed separately.
+- The `matrix`, `dingtalk` and `wake` extras are not provided: each depends on a package with a known vulnerability and no fixed release (python-olm, apscheduler, sherpa-onnx).
 
 ## Security review
 

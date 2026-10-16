@@ -142,6 +142,27 @@ if len(kept) != len(lines):
     PP.write_text("".join(kept), encoding="utf-8")
 ok(f"pyproject.toml: removed {len(lines) - len(kept)} URL dependencies")
 
+# ── 3b. Extras with no fix for a known vulnerability (postcondition) ─────
+# Sonatype's data flags a dependency of each of these, and none has a fixed
+# release: python-olm (libolm is unmaintained; 3.2.16 is final) for [matrix],
+# apscheduler (all versions) for [dingtalk], sherpa-onnx (through the latest)
+# for [wake]. An air-gapped site has no use for Matrix, DingTalk or a wake
+# word, and a known-vulnerable component in the SBOM fails review for the whole
+# package. Re-add an extra here once its dependency is fixed.
+DROPPED_EXTRAS = {
+    "matrix": "python-olm: CVE-2024-45191, CVE-2024-45192 — libolm unmaintained, no fix",
+    "dingtalk": "apscheduler: CVE-2026-31072 — all versions affected",
+    "wake": "sherpa-onnx: CVE-2026-108954 — affects through the latest release",
+}
+text = PP.read_text(encoding="utf-8")
+for extra in DROPPED_EXTRAS:
+    # One-line `name = [...]` or a multi-line block closed by a lone `]`.
+    text, n = re.subn(rf"^{extra} = \[(?:[^\n]*\]|.*?^\])[^\n]*\n", "", text, count=1, flags=re.M | re.S)
+    if n != 1:
+        fail(f"pyproject.toml: extra [{extra}] not found to drop")
+PP.write_text(text, encoding="utf-8")
+ok(f"pyproject.toml: dropped extras {', '.join(DROPPED_EXTRAS)}")
+
 # ── 4. Python range (postcondition) ──────────────────────────────────────
 # Upstream main (after v0.21.5) gates every core dependency on
 # python_version >= '3.14' as a self-updater migration shim, while declaring
@@ -242,6 +263,14 @@ if project.get("name") != DIST_NAME:
     fail(f"name is {project.get('name')!r}")
 if "Unofficial" not in project.get("description", ""):
     fail(f"description does not say it is unofficial: {project.get('description')!r}")
+extras = project.get("optional-dependencies", {})
+for extra in DROPPED_EXTRAS:
+    if extra in extras:
+        fail(f"extra [{extra}] still declared")
+    refs = [k for k, reqs in extras.items() for r in reqs if f"{DIST_NAME}[" in r and extra in
+            Requirement(r).extras]
+    if refs:
+        fail(f"extras {refs} still pull in dropped extra [{extra}]")
 if "Source" not in project.get("urls", {}):
     fail("no Source URL in project metadata")
 if project.get("version") != EXPECTED_VERSION:

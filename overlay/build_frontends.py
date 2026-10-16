@@ -45,6 +45,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sonatype  # noqa: E402
+
 # name in horo-build.json → (npm workspace, packaged directory)
 FRONTENDS = {"dashboard": ("web", "web_dist"), "tui": ("ui-tui", "tui_dist")}
 # Upstream's .npmrc: min-release-age=14. A fix newer than that is reported, not taken.
@@ -152,9 +155,41 @@ def audit(root: Path, workspace: str, dev: bool = False) -> dict:
     return out
 
 
-def nearest_fix(name: str, installed: str, ranges: list[str]) -> tuple[str | None, str]:
+def sonatype_findings(root: Path) -> dict:
+    """Sonatype's advisories on every npm package this build installed, in the
+    same shape as audit(). npm audit reads GitHub's global advisory database;
+    undici's October advisories were in Sonatype's data before that, and the
+    mirror judges by Sonatype's."""
+    if not sonatype.available():
+        return {}
+    lock = json.loads((root / "package-lock.json").read_text(encoding="utf-8"))["packages"]
+    inst: dict[str, tuple[str, str]] = {}
+    for k, v in lock.items():
+        if "node_modules/" in k and not v.get("link") and "version" in v and (root / k).is_dir():
+            name = v.get("name") or k.rsplit("node_modules/", 1)[1]
+            inst[sonatype.npm_purl(name, v["version"])] = (name, v["version"])
+    out: dict[str, dict] = {}
+    for purl, vulns in sonatype.report(list(inst)).items():
+        if vulns:
+            name, ver = inst[purl]
+            f = out.setdefault(name, {"installed": [], "ranges": [], "advisories": [], "sonatype": set()})
+            f["installed"].append(ver)
+            f["sonatype"].add(ver)
+            f["advisories"] += [f"sonatype {x.get('cve') or x.get('id')} {x.get('title', '')[:60]}" for x in vulns]
+    return out
+
+
+def nearest_fix(name: str, installed: str, ranges: list[str],
+                check_sonatype: bool = False) -> tuple[str | None, str]:
     """Smallest release above `installed`, same major, outside every advisory
-    range, older than the cooldown. Returns (version, reason-if-none)."""
+    range, older than the cooldown — and, with `check_sonatype`, one Sonatype
+    reports clean. Returns (version, note): the note says why there is no
+    version, or — when only a partial step exists — what still remains.
+
+    No Sonatype-clean release past the cooldown, but one that clears npm
+    audit's advisories: that one is returned, with a note. Raising part of the
+    way keeps the front end's npm audit clean (so it stays bundled); the
+    release gate (sonatype_check.py) still holds the release on what remains."""
     r = subprocess.run([*NPM, "view", name, "time", "--json"], capture_output=True, text=True)
     try:
         times = json.loads(r.stdout)
@@ -162,7 +197,7 @@ def nearest_fix(name: str, installed: str, ranges: list[str]) -> tuple[str | Non
         return None, f"cannot list {name} releases"
     cur = vtuple(installed)
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=COOLDOWN_DAYS)
-    waiting = None
+    ready, waiting = [], []
     for ver, when in sorted(((k, t) for k, t in times.items() if vtuple(k)), key=lambda kv: vtuple(kv[0])):
         vt = vtuple(ver)
         if cur is None or vt <= cur or vt[0] != cur[0]:
@@ -170,13 +205,21 @@ def nearest_fix(name: str, installed: str, ranges: list[str]) -> tuple[str | Non
         if any(satisfies(ver, rg) for rg in ranges):
             continue
         published = dt.datetime.fromisoformat(when.replace("Z", "+00:00"))
-        if published > cutoff:
-            waiting = waiting or (ver, published + dt.timedelta(days=COOLDOWN_DAYS))
-            continue
-        return ver, ""
-    if waiting:
-        return None, f"fix {waiting[0]} is in the {COOLDOWN_DAYS}-day cooldown until {waiting[1]:%Y-%m-%d}"
-    return None, f"no fixed release in major {cur[0] if cur else '?'}"
+        (waiting if published > cutoff else ready).append((ver, published))
+    purl = lambda v: sonatype.npm_purl(name, v)  # noqa: E731
+    pick = (lambda vs: sonatype.first_clean(purl, vs[:20])) if check_sonatype else (lambda vs: vs[0] if vs else None)
+    fix = pick([v for v, _ in ready])
+    if fix:
+        return fix, ""
+    later = pick([v for v, _ in waiting])
+    if later:
+        until = dict(waiting)[later] + dt.timedelta(days=COOLDOWN_DAYS)
+        why = f"fix {later} is in the {COOLDOWN_DAYS}-day cooldown until {until:%Y-%m-%d}"
+    else:
+        why = f"no fixed release in major {cur[0] if cur else '?'}"
+    if check_sonatype and ready and ranges:
+        return ready[0][0], f"Sonatype still flags it: {why}"
+    return None, why
 
 
 def major_of(spec: str) -> int | None:
@@ -256,6 +299,11 @@ def bump(root: Path) -> list[str]:
         for ws, _ in FRONTENDS.values():
             for name, f in audit(root, ws, dev=True).items():
                 findings.setdefault(name, f)
+        for name, f in sonatype_findings(root).items():
+            g = findings.setdefault(name, {"installed": locked_versions(root, name), "ranges": [],
+                                           "advisories": []})
+            g["advisories"] = g["advisories"] + f["advisories"]
+            g["sonatype"] = f["sonatype"]
         changed = set()
         expected: dict[tuple[str, int], str] = {}
         unfixed = {}
@@ -264,16 +312,18 @@ def bump(root: Path) -> list[str]:
             by_major: dict[int, str] = {}
             for v in f["installed"]:
                 vt = vtuple(v)
-                if vt and any(satisfies(v, rg) for rg in f["ranges"]):
+                if vt and (any(satisfies(v, rg) for rg in f["ranges"]) or v in f.get("sonatype", ())):
                     if vt[0] not in by_major or vt > vtuple(by_major[vt[0]]):
                         by_major[vt[0]] = v
             for major, installed in sorted(by_major.items()):
-                fix, why = nearest_fix(name, installed, f["ranges"])
+                fix, why = nearest_fix(name, installed, f["ranges"], check_sonatype=sonatype.available())
                 how = pin(root, name, major, fix, allow_new) if fix else None
                 if how:
                     expected[(name, major)] = fix
                     notes.append(f"- {name} {installed} → {fix} ({how}): {'; '.join(f['advisories'])}")
                     changed.add(name)
+                    if why:
+                        unfixed[f"{name} {fix}"] = why
                 elif not fix:
                     unfixed[f"{name} {installed}"] = why
         if changed:

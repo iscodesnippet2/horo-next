@@ -35,6 +35,9 @@ these fails:
   upstream's locked npm dependencies (`npm ci --ignore-scripts`). npm packages
   with a published fix are raised; a front end that still carries an advisory
   is left out of the wheel.
+- **Extras that cannot be made clean are dropped**: an extra whose dependency
+  has a known vulnerability with no fixed release is not provided (currently
+  `matrix`, `dingtalk`, `wake`; listed in `overlay/horo_overlay.py`).
 - **Upstream's 14-day cooldown is kept**: a just-published release is where a
   compromised maintainer account shows up first. A Python security fix still
   inside it is let through by name, up to that fix's own upload time — as

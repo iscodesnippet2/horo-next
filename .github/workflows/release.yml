@@ -57,7 +57,11 @@ jobs:
       - name: Apply the packaging overlay
         run: uv run --with packaging python overlay/horo_overlay.py upstream "${{ inputs.version }}"
 
-      - name: Raise vulnerable direct dependencies
+      # Advisories from OSV and, with the token, Sonatype's data — which has
+      # some OSV lacks or cannot match to a version.
+      - name: Raise vulnerable dependencies
+        env:
+          SONATYPE_GUIDE_TOKEN: ${{ secrets.SONATYPE_GUIDE_TOKEN }}
         run: uv run --with packaging python overlay/security_bump.py upstream --notes release-notes.md
 
       # Exported before the wheel: the SBOM inside it lists them.
@@ -77,6 +81,7 @@ jobs:
         # monorepo after a pin moves. Upstream's engines allow >=11.17.
         env:
           HORO_NPM: npx -y npm@11.21.0
+          SONATYPE_GUIDE_TOKEN: ${{ secrets.SONATYPE_GUIDE_TOKEN }}
         run: uv run python overlay/build_frontends.py upstream --notes release-notes.md
 
       # Files for airgap/probe.py, attached to the GitHub release so the

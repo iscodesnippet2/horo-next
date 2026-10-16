@@ -50,6 +50,9 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sonatype  # noqa: E402
+
 ROOT = Path(sys.argv[1]).resolve()
 NOTES = Path(sys.argv[sys.argv.index("--notes") + 1]) if "--notes" in sys.argv else None
 PP = ROOT / "pyproject.toml"
@@ -285,11 +288,20 @@ def vulnerable(pkgs: dict[str, str]) -> dict[str, list[str]]:
                 ids = [x["id"] for x in res.get("vulns", [])]
                 if ids:
                     found[n] = ids
+    # Sonatype has advisories OSV lacks or cannot match to a version
+    # (ctranslate2's carry only commit ranges) — and is what the mirror uses.
+    if sonatype.available():
+        res = sonatype.report([sonatype.pypi_purl(n, v) for n, v in pkgs.items()])
+        for n, v in pkgs.items():
+            ids = [x.get("cve") or x.get("id") for x in res.get(sonatype.pypi_purl(n, v), [])]
+            if ids:
+                found.setdefault(n, []).extend(f"sonatype:{i}" for i in ids)
     return found
 
 
 def fix_for(name: str, version: str) -> Version | None:
-    """The version clearing every advisory on name==version, or None."""
+    """The smallest release clearing every advisory on name==version — OSV's
+    and, when available, Sonatype's — or None."""
     fix = None
     for v in osv(name, version):
         if not v.get("withdrawn"):
@@ -297,7 +309,14 @@ def fix_for(name: str, version: str) -> Version | None:
             if f is None:
                 return None
             fix = f if fix is None or f > fix else fix
-    return fix
+    if not sonatype.available():
+        return fix
+    # Sonatype gives no fixed version; ask it about the releases after this
+    # one (from OSV's fix up, if any) and take the first it reports clean.
+    floor = fix or Version(version)
+    cands = [str(r) for r in pypi_releases(name) if r > Version(version) and r >= floor][:40]
+    clean = sonatype.first_clean(lambda x: sonatype.pypi_purl(name, x), cands)
+    return Version(clean) if clean else None
 
 
 
