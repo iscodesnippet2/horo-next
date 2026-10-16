@@ -37,10 +37,12 @@ for each, in [`overlay/horo_overlay.py`](../overlay/horo_overlay.py).
    release SBOM (`metadata.component.hashes`) and in the PyPI attestation
    (Trusted Publishing, PEP 740) on the PyPI file page.
 3. **Compare with our audit.** `audit-X.Y.Z.json` lists every package checked
-   against OSV for Linux / CPython 3.12 and every finding; a release is not
-   published with any. Sonatype's database differs from OSV, so differences
-   are possible — a finding of yours that is absent from ours is worth
-   reporting (see [SECURITY.md](../SECURITY.md)).
+   and every finding, against two databases: OSV, and Sonatype's own data
+   through the Sonatype Guide (formerly OSS Index) API — every SBOM component
+   that reaches Linux / CPython 3.12, Python and bundled npm alike. A release
+   is not published with a finding in either. Your Sonatype policies may still
+   differ (license, age, Release Integrity); a finding of yours that is absent
+   from ours is worth reporting (see [SECURITY.md](../SECURITY.md)).
 
 ## With Sonatype specifically
 

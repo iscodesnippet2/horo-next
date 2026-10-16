@@ -26,7 +26,9 @@ these fails:
 
 - **Known vulnerabilities — none allowed.** Every Python dependency, core and
   every optional extra, is checked against [OSV](https://osv.dev) for the
-  target platform (Linux, CPython 3.12). Direct dependencies with a published
+  target platform (Linux, CPython 3.12) — and, with every npm package compiled
+  into the bundles, against Sonatype's data too (the Sonatype Guide /
+  OSS Index API), which is what a Sonatype-filtered mirror judges by. Direct dependencies with a published
   fix are raised to it; transitive ones are raised in the lock. Anything left
   holds the release.
 - **Bundled JavaScript.** The dashboard and terminal UI are compiled from

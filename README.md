@@ -25,6 +25,7 @@ committed here**. The default branch, `horo`, holds only the tooling:
 | `overlay/sbom.py` | CycloneDX SBOM (Python dependencies and every npm package compiled into the bundles) and third-party notices; embeds the SBOM in the wheel |
 | `overlay/verify_wheel.py` | Installs the wheel into a clean venv and checks it works |
 | `overlay/audit.py` | Checks the Linux / Python 3.12 dependency set against OSV |
+| `overlay/sonatype_check.py` | Checks every SBOM component against Sonatype's data (Sonatype Guide / OSS Index API; needs `SONATYPE_GUIDE_TOKEN`) |
 | `overlay/extras_map.py` | Maps each package to the features (core or extras) that need it |
 | `airgap/probe.py` | Run on an air-gapped machine: which dependencies the mirror serves |
 | `pypi/README.md` | The project page shown on PyPI |

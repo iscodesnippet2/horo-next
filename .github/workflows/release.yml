@@ -135,6 +135,19 @@ jobs:
             "requirements-${{ inputs.version }}-all-extras.txt" \
             "All extras, offline list" --fail --notes release-notes.md --json "$report"
 
+      # The same question asked of Sonatype's own data (what an enterprise
+      # mirror running Sonatype Repository Firewall judges by), for every
+      # Python and bundled npm component in the SBOM. Needs the repository
+      # secret SONATYPE_GUIDE_TOKEN (a Sonatype Guide personal access token);
+      # without it this step fails rather than pass unchecked.
+      - name: Audit the SBOM against Sonatype (OSS Index API)
+        env:
+          SONATYPE_GUIDE_TOKEN: ${{ secrets.SONATYPE_GUIDE_TOKEN }}
+        run: |
+          uv run --with packaging python overlay/sonatype_check.py \
+            "horo-next-${{ inputs.version }}.cdx.json" --fail \
+            --notes release-notes.md --json "audit-${{ inputs.version }}.json"
+
       - id: meta
         run: |
           echo "pythons=$(jq -c .pythons upstream/horo-build.json)" >> "$GITHUB_OUTPUT"
