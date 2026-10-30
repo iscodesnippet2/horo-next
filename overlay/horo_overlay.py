@@ -163,6 +163,19 @@ for extra in DROPPED_EXTRAS:
 PP.write_text(text, encoding="utf-8")
 ok(f"pyproject.toml: dropped extras {', '.join(DROPPED_EXTRAS)}")
 
+# ── 3c. Raises that must move together (exact anchors) ───────────────────
+# security_bump raises one package at a time, so it cannot clear
+# opentelemetry-api (CVE-2026-114603, fix 1.45.1): [otlp] pins the SDK and
+# exporter to 1.39.1, the SDK pins the API, and mistralai below 2.9.2 caps
+# semantic-conventions under the release that goes with it. 2.10.1 is the same
+# major. tools/lazy_deps.py repeats the pins; keep it in step.
+for path, count in (("pyproject.toml", 1), ("tools/lazy_deps.py", 1)):
+    edit(path, "opentelemetry-sdk==1.39.1", "opentelemetry-sdk==1.45.1", count)
+    edit(path, "opentelemetry-exporter-otlp-proto-http==1.39.1",
+         "opentelemetry-exporter-otlp-proto-http==1.45.1", count)
+edit("pyproject.toml", "mistralai==2.4.8", "mistralai==2.10.1")
+edit("tools/lazy_deps.py", "mistralai==2.4.8", "mistralai==2.10.1", 2)
+
 # ── 4. Python range (postcondition) ──────────────────────────────────────
 # Upstream main (after v0.21.5) gates every core dependency on
 # python_version >= '3.14' as a self-updater migration shim, while declaring
