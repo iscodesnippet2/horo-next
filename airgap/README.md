@@ -44,6 +44,25 @@ certificates, proxy). To point at a mirror explicitly, add
 To keep everything that downloaded — a ready-made wheelhouse for machines with
 no mirror access — add `--dest wheelhouse`.
 
+## Before running Hermes there
+
+Hermes can install a missing optional package the first time a feature needs
+it. On an air-gapped machine, turn that off so nothing is fetched at runtime:
+
+```yaml
+# ~/.hermes/config.yaml
+security:
+  allow_lazy_installs: false
+```
+
+or set `HERMES_DISABLE_LAZY_INSTALLS=1` in the service's environment.
+
+Install what the site uses up front:
+
+```bash
+pip install "horo-next[web,mcp,acp,mattermost]"
+```
+
 ## Reading the result
 
 | Status | Meaning |

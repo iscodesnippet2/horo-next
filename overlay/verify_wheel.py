@@ -183,6 +183,20 @@ print("JSON" + json.dumps(out))
     builtin = next((ln for ln in r.stdout.splitlines() if "builtin" in ln and "enabled" in ln), "")
     check("0 builtin" not in builtin and builtin != "", "`hermes skills list` shows builtin skills", builtin.strip())
 
+    # Mattermost is the air-gapped site's messaging platform. Upstream ships
+    # its one dependency only inside extras horo-next drops.
+    r = run("uv", "pip", "install", f"{WHEEL}[mattermost]")
+    check(r.returncode == 0, "[mattermost] extra installs", r.stderr[-300:] if r.returncode else "")
+    r = run(str(py), "-c", """
+from hermes_cli.plugins import discover_plugins
+discover_plugins()
+from gateway.platform_registry import platform_registry as reg
+e = reg.get("mattermost")
+print("MM", bool(e and e.check_fn()))
+""")
+    check("MM True" in r.stdout, "Mattermost adapter registers and its requirements are met",
+          r.stderr[-300:] if "MM True" not in r.stdout else "")
+
     # From a source checkout `hermes dashboard` builds the front end with npm
     # first; from a wheel there is no source, so without the prebuilt copy it
     # exits. Started for real and fetched, with the [web] extra a user installs.

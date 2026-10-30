@@ -142,39 +142,39 @@ if len(kept) != len(lines):
     PP.write_text("".join(kept), encoding="utf-8")
 ok(f"pyproject.toml: removed {len(lines) - len(kept)} URL dependencies")
 
-# ── 3b. Extras with no fix for a known vulnerability (postcondition) ─────
-# Sonatype's data flags a dependency of each of these, and none has a fixed
-# release: python-olm (libolm is unmaintained; 3.2.16 is final) for [matrix],
-# apscheduler (all versions) for [dingtalk], sherpa-onnx (through the latest)
-# for [wake]. An air-gapped site has no use for Matrix, DingTalk or a wake
-# word, and a known-vulnerable component in the SBOM fails review for the whole
-# package. Re-add an extra here once its dependency is fixed.
-DROPPED_EXTRAS = {
-    "matrix": "python-olm: CVE-2024-45191, CVE-2024-45192 — libolm unmaintained, no fix",
-    "dingtalk": "apscheduler: CVE-2026-31072 — all versions affected",
-    "wake": "sherpa-onnx: CVE-2026-108954 — affects through the latest release",
-}
+# ── 3b. Extras: an allowlist for the air-gapped target (postcondition) ───
+# horo-next serves machines that reach a local OpenAI-compatible endpoint, a
+# local Mattermost and an enterprise package mirror, nothing else. Extras for
+# cloud services and public messaging platforms cannot work there, yet every
+# one of their dependencies had to stay free of advisories and was listed in
+# the SBOM: they caused most version raises and held releases. Each extra kept
+# here is one that works offline. [mattermost] is new: the adapter needs only
+# aiohttp, which upstream ships only inside other extras.
+KEEP_EXTRAS = {"acp", "cron", "mcp", "pty", "uvloop", "web"}
 text = PP.read_text(encoding="utf-8")
-for extra in DROPPED_EXTRAS:
+upstream_extras = tomllib.loads(text)["project"]["optional-dependencies"]
+missing = KEEP_EXTRAS - set(upstream_extras)
+if missing:
+    fail(f"pyproject.toml: extras to keep are gone upstream: {sorted(missing)}")
+aiohttp_pin = next((r for reqs in upstream_extras.values() for r in reqs if r.startswith("aiohttp==")), None)
+if aiohttp_pin is None:
+    fail("pyproject.toml: no aiohttp pin to reuse for [mattermost]")
+for extra in sorted(set(upstream_extras) - KEEP_EXTRAS - {"all"}):
     # One-line `name = [...]` or a multi-line block closed by a lone `]`.
-    text, n = re.subn(rf"^{extra} = \[(?:[^\n]*\]|.*?^\])[^\n]*\n", "", text, count=1, flags=re.M | re.S)
+    text, n = re.subn(rf"^{re.escape(extra)} = \[(?:[^\n]*\]|.*?^\])[^\n]*\n", "", text, count=1, flags=re.M | re.S)
     if n != 1:
         fail(f"pyproject.toml: extra [{extra}] not found to drop")
+everything = sorted(KEEP_EXTRAS | {"mattermost"})
+all_block = "all = [\n" + "".join(f'  "{DIST_NAME}[{x}]",\n' for x in everything) + "]\n"
+text, n = re.subn(r"^all = \[.*?^\]\n", lambda _: all_block, text, count=1, flags=re.M | re.S)
+if n != 1:
+    fail("pyproject.toml: [all] not found to rewrite")
+header = "[project.optional-dependencies]\n"
+if text.count(header) != 1:
+    fail("pyproject.toml: optional-dependencies table not found")
+text = text.replace(header, f'{header}mattermost = ["{aiohttp_pin}"]\n')
 PP.write_text(text, encoding="utf-8")
-ok(f"pyproject.toml: dropped extras {', '.join(DROPPED_EXTRAS)}")
-
-# ── 3c. Raises that must move together (exact anchors) ───────────────────
-# security_bump raises one package at a time, so it cannot clear
-# opentelemetry-api (CVE-2026-114603, fix 1.45.1): [otlp] pins the SDK and
-# exporter to 1.39.1, the SDK pins the API, and mistralai below 2.9.2 caps
-# semantic-conventions under the release that goes with it. 2.10.1 is the same
-# major. tools/lazy_deps.py repeats the pins; keep it in step.
-for path, count in (("pyproject.toml", 1), ("tools/lazy_deps.py", 1)):
-    edit(path, "opentelemetry-sdk==1.39.1", "opentelemetry-sdk==1.45.1", count)
-    edit(path, "opentelemetry-exporter-otlp-proto-http==1.39.1",
-         "opentelemetry-exporter-otlp-proto-http==1.45.1", count)
-edit("pyproject.toml", "mistralai==2.4.8", "mistralai==2.10.1")
-edit("tools/lazy_deps.py", "mistralai==2.4.8", "mistralai==2.10.1", 2)
+ok(f"pyproject.toml: extras reduced to {', '.join(everything)}")
 
 # ── 4. Python range (postcondition) ──────────────────────────────────────
 # Upstream main (after v0.21.5) gates every core dependency on
@@ -277,13 +277,8 @@ if project.get("name") != DIST_NAME:
 if "Unofficial" not in project.get("description", ""):
     fail(f"description does not say it is unofficial: {project.get('description')!r}")
 extras = project.get("optional-dependencies", {})
-for extra in DROPPED_EXTRAS:
-    if extra in extras:
-        fail(f"extra [{extra}] still declared")
-    refs = [k for k, reqs in extras.items() for r in reqs if f"{DIST_NAME}[" in r and extra in
-            Requirement(r).extras]
-    if refs:
-        fail(f"extras {refs} still pull in dropped extra [{extra}]")
+if set(extras) != KEEP_EXTRAS | {"mattermost", "all"}:
+    fail(f"extras are not the allowlist: {sorted(extras)}")
 if "Source" not in project.get("urls", {}):
     fail("no Source URL in project metadata")
 if project.get("version") != EXPECTED_VERSION:

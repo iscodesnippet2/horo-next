@@ -22,9 +22,9 @@ Security, in the same spirit as security_bump.py for Python:
   place; anything else gets a root override.
 * A front end that still carries an advisory afterwards is NOT bundled. The
   wheel ships without it — exactly as before this script existed — and the
-  release notes say why. npm audit cannot tell whether vulnerable code reaches
-  a bundle, so presence in the dependency tree is treated as presence in the
-  wheel.
+  release notes say why. Whether a package reaches a bundle is read from the
+  build output (the same source as the SBOM), not assumed from the dependency
+  tree, so a package tree-shaken out does not cost a front end.
 
 npm runs with --ignore-scripts: install scripts are where npm supply-chain
 attacks execute, and neither build needs one.
@@ -46,6 +46,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sbom  # noqa: E402
 import sonatype  # noqa: E402
 
 # name in horo-build.json → (npm workspace, packaged directory)
@@ -264,6 +265,13 @@ def pin(root: Path, name: str, major: int, version: str, allow_new: bool) -> str
             pj.write_text(json.dumps(d, indent=2) + "\n", encoding="utf-8")
             edited.append(f"pin in {rel}")
     if edited:
+        # A pin alone is not enough for a package other packages peer-depend
+        # on: vite's `^8` peers let npm reach for 8.3.5 and fail to resolve
+        # against the exact pins. A matching override holds every copy.
+        if not any(e.startswith("override") for e in edited):
+            data = json.loads(rootpj.read_text(encoding="utf-8"))
+            data.setdefault("overrides", {})[f"{name}@^{major}"] = version
+            rootpj.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         return ", ".join(edited)
     if not allow_new:
         return None
@@ -298,7 +306,11 @@ def bump(root: Path) -> list[str]:
         findings: dict[str, dict] = {}
         for ws, _ in FRONTENDS.values():
             for name, f in audit(root, ws, dev=True).items():
-                findings.setdefault(name, f)
+                # Merge: each workspace reports only the ranges for the copy it
+                # reaches — undici's 6.x ranges appear only under ui-tui.
+                g = findings.setdefault(name, {**f, "ranges": [], "advisories": []})
+                g["ranges"] = sorted({*g["ranges"], *f["ranges"]})
+                g["advisories"] = list(dict.fromkeys(g["advisories"] + f["advisories"]))
         for name, f in sonatype_findings(root).items():
             g = findings.setdefault(name, {"installed": locked_versions(root, name), "ranges": [],
                                            "advisories": []})
@@ -379,6 +391,14 @@ def build(root: Path, name: str) -> Path:
     return out
 
 
+def bundled_flagged(root: Path, frontend: str, flagged: dict) -> set[str]:
+    """Which of these packages are actually compiled into the built bundle.
+    A dependency tree lists more than ships: tree-shaking left @nous-research/ui's
+    deepmerge and sanitize-html out of the dashboard."""
+    dirs = sbom.dashboard_modules(root) if frontend == "dashboard" else sbom.tui_modules(root)
+    return {p for p in flagged if any(d.endswith("node_modules/" + p) for d in dirs)}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("checkout", type=Path)
@@ -401,17 +421,22 @@ def main() -> int:
     bundled = []
     for name, (ws, dirname) in FRONTENDS.items():
         shutil.rmtree(root / "hermes_cli" / dirname, ignore_errors=True)
-        remaining = audit(root, ws)
-        if remaining:
-            print(f"[frontends] SKIP {name}: advisories remain in {ws}")
-            notes.append(f"- **{name}: not included.** Advisories remain in its dependencies:")
-            notes += [f"  - {p} {', '.join(f['installed'])}: {'; '.join(f['advisories'])}"
-                      for p, f in sorted(remaining.items())]
-            continue
         out = build(root, name)
+        remaining = audit(root, ws)
+        inside = bundled_flagged(root, name, remaining)
+        if inside:
+            shutil.rmtree(out, ignore_errors=True)
+            print(f"[frontends] SKIP {name}: advisories in the bundle")
+            notes.append(f"- **{name}: not included.** Its bundle contains packages with advisories:")
+            notes += [f"  - {p} {', '.join(remaining[p]['installed'])}: {'; '.join(remaining[p]['advisories'])}"
+                      for p in sorted(inside)]
+            continue
         size = sum(f.stat().st_size for f in out.rglob("*") if f.is_file()) / 1e6
         print(f"[frontends] ok   {name} → hermes_cli/{dirname} ({size:.1f} MB)")
-        notes.append(f"- {name}: included (npm audit of its runtime dependencies: no advisories)")
+        notes.append(f"- {name}: included (no package in its bundle has an npm audit advisory)")
+        if remaining:
+            notes.append(f"  - in its dependency tree but not in the bundle, so not in the wheel: "
+                         f"{', '.join(f'{p} ' + '/'.join(f['installed']) for p, f in sorted(remaining.items()))}")
         bundled.append(name)
 
     # Build and test tools left unfixed: reported — they are not in the wheel.
