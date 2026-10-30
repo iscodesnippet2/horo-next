@@ -53,6 +53,11 @@ import sonatype  # noqa: E402
 FRONTENDS = {"dashboard": ("web", "web_dist"), "tui": ("ui-tui", "tui_dist")}
 # Upstream's .npmrc: min-release-age=14. A fix newer than that is reported, not taken.
 COOLDOWN_DAYS = 14
+# Moves past a major line with no fix, each checked by hand. Sonatype flags
+# undici 6.29.1, the last 6.x (CVE-2026-84947). The TUI imports only its
+# WebSocket, as a fallback for runtimes without a global one; 7.x exports the
+# same class. (manifest, package, major it leaves, version)
+MAJOR_MOVES = [("ui-tui/package.json", "undici", 6, "7.30.1")]
 # Package manifests whose pins a bump may edit: the root and every workspace a
 # front end builds from (web imports apps/shared).
 # npm 11: npm 10's resolver crashes ("reading 'edgesOut'") re-locking this
@@ -281,6 +286,26 @@ def pin(root: Path, name: str, major: int, version: str, allow_new: bool) -> str
     return f"new override {name}@^{major}"
 
 
+def move_majors(root: Path) -> list[str]:
+    """Apply MAJOR_MOVES to the manifests and re-lock. Fails closed on a pin
+    that is not the one checked, so a new upstream release is looked at again."""
+    notes = []
+    for rel, name, major, version in MAJOR_MOVES:
+        pj = root / rel
+        d = json.loads(pj.read_text(encoding="utf-8"))
+        old = d["dependencies"].get(name)
+        if major_of(old or "") != major:
+            sys.exit(f"[frontends] {rel}: expected {name} {major}.x, found {old}")
+        d["dependencies"][name] = version
+        pj.write_text(json.dumps(d, indent=2) + "\n", encoding="utf-8")
+        # Upstream's `name@^N` override for the new major must agree, or npm
+        # refuses the direct dependency (EOVERRIDE).
+        pin(root, name, major_of(version), version, allow_new=False)
+        notes.append(f"- {name} {old} → {version} in {rel}: major raise, no fixed release in {major}.x")
+    run([*NPM, "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"], root)
+    return notes
+
+
 def install(root: Path, locked: bool) -> None:
     workspaces = [f"--workspace={w}" for w, _ in FRONTENDS.values()]
     if not locked:
@@ -409,12 +434,13 @@ def main() -> int:
     if not shutil.which(NPM[0]) or not shutil.which("node"):
         sys.exit("[frontends] node and npm are required")
 
+    moved = move_majors(root)
     install(root, locked=True)
     notes = ["", "## Front ends", "",
              "The dashboard and TUI are prebuilt into the wheel; the target machine "
              "does not run npm for them. A front end whose dependencies still carry "
              "an advisory after raising them is left out.", ""]
-    bumped = bump(root)
+    bumped = moved + bump(root)
     if bumped:
         notes += ["Raised npm packages:", *bumped, ""]
 
