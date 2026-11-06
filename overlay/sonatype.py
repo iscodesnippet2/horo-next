@@ -24,6 +24,12 @@ import urllib.request
 
 ENDPOINT = os.environ.get("SONATYPE_GUIDE_URL", "https://api.guide.sonatype.com/api/v3/component-report")
 BATCH = 128  # OSS Index's per-request limit
+# Each component asked about costs credits (0.1 on the free tier). One release
+# asks about many twice: both bump rounds, then the gate over the SBOM. Answers
+# are kept for the run — in memory, and in this file when set, so the workflow's
+# steps share them. Only answers are kept; a component not returned is asked again.
+CACHE = os.environ.get("HORO_SONATYPE_CACHE", "")
+_answers: dict[str, list[dict]] = {}
 
 
 def token() -> str:
@@ -45,6 +51,8 @@ def _post(purls: list[str]) -> list[dict]:
         except urllib.error.HTTPError as e:
             if e.code == 401:
                 sys.exit("[sonatype] 401 Unauthorized: SONATYPE_GUIDE_TOKEN was rejected")
+            if e.code == 402:
+                sys.exit(f"[sonatype] out of Sonatype Guide credits — no result, nothing passes: {e.read()[:300]!r}")
             if e.code == 429 and attempt < 3:
                 time.sleep(10 * (attempt + 1))
                 continue
@@ -71,13 +79,20 @@ def report(purls: list[str]) -> dict[str, list[dict]]:
     clean. A purl Sonatype did not answer for is NOT treated as clean: it
     carries NOT_RETURNED, so callers fail closed."""
     purls = sorted(set(purls))
-    asked = {_key(p): p for p in purls}
-    out: dict[str, list[dict]] = {}
-    for i in range(0, len(purls), BATCH):
-        for r in _post(purls[i:i + BATCH]):
+    if CACHE and not _answers and os.path.isfile(CACHE):
+        with open(CACHE, encoding="utf-8") as f:
+            _answers.update(json.load(f))
+    out = {p: _answers[_key(p)] for p in purls if _key(p) in _answers}
+    todo = [p for p in purls if p not in out]
+    asked = {_key(p): p for p in todo}
+    for i in range(0, len(todo), BATCH):
+        for r in _post(todo[i:i + BATCH]):
             p = asked.get(_key(r.get("coordinates", "")))
             if p:
-                out[p] = r.get("vulnerabilities", [])
+                out[p] = _answers[_key(p)] = r.get("vulnerabilities", [])
+    if todo and CACHE:
+        with open(CACHE, "w", encoding="utf-8") as f:
+            json.dump(_answers, f)
     for p in purls:
         out.setdefault(p, [NOT_RETURNED])
     return out
