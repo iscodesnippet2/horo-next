@@ -23,7 +23,7 @@ Scope is DIRECT dependencies only, and that is deliberate:
 Pins stay exact. Only the version moves, and only to the lowest version that
 fixes every advisory, so the change is as small as the fix allows.
 
-Upstream's uv cooldown (exclude-newer = "14 days") hides a fix younger than
+Upstream's uv cooldown (exclude-newer = "14 days", "3 days" since v0.22) hides a fix younger than
 the window. Upstream handles that by hand with a per-package exception (h2,
 aiohttp, cryptography in v0.21.5). This does the same, narrowly: the exception
 admits releases up to the fix's own upload time, not `false`, so anything
@@ -117,6 +117,13 @@ def grant_exception(name: str, version: Version, up: dt.datetime) -> bool:
     An existing entry for the package (often `false`) is already wider: kept."""
     text = PP.read_text(encoding="utf-8")
     header = "[tool.uv.exclude-newer-package]\n"
+    # Since v0.22 upstream writes it inline under [tool.uv]:
+    # `exclude-newer-package = { certifi = false }`. A line can carry no
+    # comment there, so it becomes the table form, same entries.
+    inline = re.search(r"^exclude-newer-package\s*=\s*\{([^}\n]*)\}[^\n]*\n", text, re.M)
+    if header not in text and inline:
+        entries = "".join(e.strip() + "\n" for e in inline.group(1).split(",") if e.strip())
+        text = text.replace(inline.group(0), "", 1).rstrip("\n") + "\n\n" + header + entries
     if header not in text:
         return False
     table = text.split(header, 1)[1].split("\n[", 1)[0]
@@ -371,7 +378,7 @@ if NOTES:
                       "(the wheel does not pin these):", ""]
         lines += [f"- {t}" for t in transitive_upgraded]
     if exceptions:
-        lines += ["", "Cooldown exceptions (upstream's 14-day uv cooldown hid these fixes; "
+        lines += ["", f"Cooldown exceptions (upstream's {cooldown_days()}-day uv cooldown hid these fixes; "
                       "each admits releases only up to the fix itself):", ""]
         lines += [f"- {e}" for e in exceptions]
     if lingering:

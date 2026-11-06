@@ -63,6 +63,26 @@ Install what the site uses up front:
 pip install "horo-next[web,mcp,acp,mattermost]"
 ```
 
+### From horo-next 0.23
+
+- **Browser automation** (`browser_exec`) drives a Chromium. Upstream downloads
+  one on first use; here, point it at the one the site provides:
+
+  ```yaml
+  browser:
+    executable_path: /usr/bin/chromium
+  ```
+
+  The engine, browser-harness, ships inside the wheel with its telemetry and
+  update check switched off.
+- **One gateway per OS user.** The CLI, TUI and dashboard attach to a gateway,
+  starting one in the background if none runs. Its rendezvous records live in
+  `~/.local/state/hermes/` (`HERMES_GATEWAY_LOCK_DIR` moves them).
+- **SQLite 3.51.3 or newer** (or 3.50.7 / 3.44.6) lets Hermes use WAL; with an
+  older one it logs a warning and falls back to a slower journal mode. Check
+  with `python3 -c "import sqlite3; print(sqlite3.sqlite_version)"`.
+- **The TUI** needs `node` 20 or newer on `PATH`; npm is not used.
+
 ## Reading the result
 
 | Status | Meaning |

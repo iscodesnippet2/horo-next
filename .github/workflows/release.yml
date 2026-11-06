@@ -43,11 +43,13 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       # Builds the dashboard and TUI into the wheel, so the target machine
-      # never runs npm for them. Upstream's package.json engines: ^22.22 || ^24.11.
+      # never runs npm for them. Upstream's package.json engines, enforced by its
+      # .npmrc engine-strict: >=26 since v0.22 (v0.21.5 also accepts >=26).
+      # Building only — the TUI bundle targets node20, the air-gapped site runs 22.
       # A front end still carrying an npm advisory after raising is left out.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 26
 
       - name: Clone the upstream release
         run: |

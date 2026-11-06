@@ -22,6 +22,7 @@ Packaging only. Product behaviour is upstream's.
 - Python 3.11 is kept supported; the upper bound follows each upstream release.
 - Dependencies only available from a URL (not on PyPI) are left out and must be installed separately.
 - Only the extras that work on an air-gapped network are provided: `web`, `mcp`, `acp`, `cron`, `pty`, `uvloop`, and a new `mattermost`. Extras for cloud services and public messaging platforms are not.
+- From 0.23: version and update ownership come from an install stamp inside the package, as upstream's other packagers do; Python 3.11–3.13 stay supported although upstream now runs only on 3.14; and browser-harness, the browser automation engine, ships inside the wheel (its `pillow==12.3.0` pin cannot resolve under pip next to the Pillow 13 security fix), with its telemetry and PyPI update check switched off.
 
 ## Security review
 

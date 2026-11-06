@@ -132,6 +132,61 @@ else:
                 'Upstream = "https://github.com/NousResearch/hermes-agent"\n')
     ok("pyproject.toml: project URLs")
 
+# ── 2b. Version and install stamp ────────────────────────────────────────
+# Since v0.21.6 upstream declares version 0.0.0 and reads its identity from
+# install-stamp.json, which each packager (Docker, Nix, desktop) writes. This
+# is one more packager. Its distribution names the steward: a tree without a
+# checkout is sealed, and `hermes update` refuses with that steward's message
+# instead of updating it in place.
+STAMP_DISTRIBUTION = DIST_NAME
+if re.search(r'^version = "0\.0\.0"$', PP.read_text(encoding="utf-8"), re.M):
+    sub_once("pyproject.toml", r'^version = "0\.0\.0"$', f'version = "{EXPECTED_VERSION}"', "version")
+    import datetime as _dt
+    import json as _json
+    import subprocess as _sp
+    _git = lambda *a: _sp.run(["git", "-C", str(ROOT), *a], capture_output=True, text=True).stdout.strip()  # noqa: E731
+    commit = _git("rev-parse", "HEAD")
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        fail("install stamp: upstream commit unknown (not a git checkout?)")
+    stamp = {
+        # Fields as scripts/write_install_stamp.py writes them (schema 2).
+        "schemaVersion": 2,
+        "commit": commit,
+        "commitDate": int(_git("log", "-1", "--format=%ct") or 0) or None,
+        "branch": None,
+        "builtAt": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "dirty": False,
+        "source": "build",
+        "distribution": STAMP_DISTRIBUTION,
+        "updateMechanism": "external",
+        "baseVersion": EXPECTED_VERSION,
+        "displayVersion": EXPECTED_VERSION,
+        "distance": 0,
+        "payload": "bootstrap",
+        "tag": None,
+    }
+    (ROOT / "hermes_cli" / "install-stamp.json").write_text(_json.dumps(stamp, indent=2) + "\n", encoding="utf-8")
+    ok(f"install stamp: {EXPECTED_VERSION} at {commit[:12]}")
+    # The stamp sits beside the code, which in a wheel is site-packages itself —
+    # no place for a top-level data file. It ships inside hermes_cli instead.
+    edit("pm/paths.py",
+         '''        root = install_root()
+    return root / "install-stamp.json"''',
+         '''        root = install_root()
+        packaged = Path(__file__).resolve().parent.parent / "hermes_cli" / "install-stamp.json"
+        if not (root / "install-stamp.json").is_file() and packaged.is_file():
+            return packaged  # horo-next: the stamp ships inside hermes_cli
+    return root / "install-stamp.json"''')
+    edit("hermes_cli/steward.py",
+         "STEWARD_UPDATE_MESSAGES = {\n",
+         "STEWARD_UPDATE_MESSAGES = {\n"
+         f'    "{STAMP_DISTRIBUTION}": (\n'
+         '        "✗ This Hermes is the horo-next Python package.\\n"\n'
+         '        "\\n"\n'
+         '        "Update it with pip:\\n"\n'
+         '        "  pip install -U horo-next"\n'
+         "    ),\n")
+
 # ── 3. URL dependencies (postcondition) ──────────────────────────────────
 # PyPI rejects any Requires-Dist carrying a URL, extras included. Those
 # packages move to the operator's wheelhouse.
@@ -189,6 +244,81 @@ text = text.replace('environments = ["python_version >= \'3.14\'"]',
                     f'environments = ["python_version >= \'{MIN_PYTHON[0]}.{MIN_PYTHON[1]}\'"]')
 PP.write_text(text, encoding="utf-8")
 
+# ── 4b. browser-harness, vendored ────────────────────────────────────────
+# browser_exec, upstream's only browser tool since v0.23.0, runs on
+# browser-harness, a core dependency that pins pillow==12.3.0. Upstream
+# needs Pillow 13 for its advisories and gets there with a uv override;
+# pip has none, so the published metadata would not resolve. The harness
+# ships inside the wheel instead, from the release upstream pins (hash-
+# checked), and its other requirements become ours. Its Pillow use (open,
+# convert, draw) is what upstream already runs on 13.
+#
+# Its telemetry, opt-out and sent to PostHog, is switched off: Hermes already
+# sets ANONYMIZED_TELEMETRY=false when it starts the harness, and the target
+# has no route out.
+BH_VERSION = "0.1.13"
+BH_WHEEL = ("https://files.pythonhosted.org/packages/4a/bd/f166cf9a465eff436048d25851ab28b0d798af02b56998127a4165227fc4/"
+            f"browser_harness-{BH_VERSION}-py3-none-any.whl")
+BH_SHA256 = "2491459e4bfc0ee8aea22dc6c4680fc0f791b7ba553446323c50d2883449d769"
+vendored: list[dict] = []  # → horo-build.json, read by sbom.py
+text = PP.read_text(encoding="utf-8")
+bh_line = re.search(r'^\s*"browser-harness==([^";]+)",[^\n]*\n', text, re.M)
+if not bh_line:
+    ok("pyproject.toml: no browser-harness dependency (before v0.23): nothing to vendor")
+elif bh_line.group(1) != BH_VERSION:
+    fail(f"pyproject.toml: upstream pins browser-harness {bh_line.group(1)}, vendoring is for {BH_VERSION}")
+else:
+    import hashlib
+    import io
+    import urllib.request
+    import zipfile
+    from email.parser import HeaderParser
+    with urllib.request.urlopen(BH_WHEEL, timeout=60) as r:
+        blob = r.read()
+    if hashlib.sha256(blob).hexdigest() != BH_SHA256:
+        fail("browser-harness wheel: SHA-256 mismatch")
+    else:
+        whl = zipfile.ZipFile(io.BytesIO(blob))
+        dest = ROOT / "browser_harness"
+        if dest.exists():
+            fail("browser_harness/ already exists upstream")
+        for name in whl.namelist():
+            if name.startswith("browser_harness/"):
+                (ROOT / name).parent.mkdir(parents=True, exist_ok=True)
+                (ROOT / name).write_bytes(whl.read(name))
+        info = f"browser_harness-{BH_VERSION}.dist-info"
+        (ROOT / "LICENSES").mkdir(exist_ok=True)
+        (ROOT / "LICENSES" / "browser-harness.txt").write_bytes(whl.read(f"{info}/licenses/LICENSE"))
+        reqs = [r for r in HeaderParser().parsestr(whl.read(f"{info}/METADATA").decode()).get_all("Requires-Dist", [])
+                if "extra ==" not in r]
+        core_names = {re.split(r"[=<>!~ ;\[]", r, maxsplit=1)[0].lower().replace("_", "-")
+                      for r in tomllib.loads(text)["project"]["dependencies"]}
+        added = [r for r in reqs if re.split(r"[=<>!~ ;\[]", r, maxsplit=1)[0].lower() not in core_names]
+        text = text.replace(bh_line.group(0), "".join(f'  "{r}",  # horo-next: browser-harness {BH_VERSION}, vendored\n'
+                                                      for r in added))
+        text = text.replace('license-files = ["LICENSE"]', 'license-files = ["LICENSE", "LICENSES/browser-harness.txt"]')
+        PP.write_text(text, encoding="utf-8")
+        ok(f"browser-harness {BH_VERSION} vendored; its requirements added: {', '.join(added) or 'none'}")
+        vendored.append({"name": "browser-harness", "version": BH_VERSION, "license": "MIT",
+                         "url": BH_WHEEL, "sha256": BH_SHA256, "path": "browser_harness",
+                         "requires": reqs,
+                         "patches": ["pillow==12.3.0 requirement replaced by the core Pillow pin",
+                                     "telemetry.is_enabled() returns False",
+                                     "admin._latest_release_tag() returns None (no PyPI version check)"]})
+        edit("browser_harness/telemetry.py",
+             "def is_enabled() -> bool:\n    if _env_disabled():",
+             "def is_enabled() -> bool:\n    return False  # horo-next: never sent from a horo-next install\n    if _env_disabled():")
+        # Its daily PyPI version check: this copy is updated with horo-next.
+        edit("browser_harness/admin.py",
+             '    """Return latest PyPI version, or None. Cached for 24h to avoid hammering PyPI."""\n',
+             '    """Return latest PyPI version, or None. Cached for 24h to avoid hammering PyPI."""\n'
+             "    return None  # horo-next: vendored; it updates with horo-next, not from PyPI\n")
+        sub_once("pyproject.toml", r'^\[tool\.setuptools\.packages\.find\]\ninclude = \[\n',
+                 '[tool.setuptools.packages.find]\ninclude = [\n  "browser_harness",\n', "vendored package")
+        sub_once("pyproject.toml", r'^\[tool\.setuptools\.package-data\]\n',
+                 '[tool.setuptools.package-data]\nbrowser_harness = ["SKILL.md", "video-template.html"]\n',
+                 "vendored package data")
+
 # ── 5. Bundle assets inside a package ────────────────────────────────────
 bundle = ROOT / "hermes_cli" / "_bundled"
 if bundle.exists():
@@ -205,7 +335,7 @@ ok(f"bundled {len(ASSETS)} asset dirs into hermes_cli/_bundled/")
 # build_frontends.py before the wheel is built. Upstream already looks for them
 # there; they are .gitignored build output, so its config never packaged them.
 sub_once("pyproject.toml", r'^hermes_cli = \[',
-         'hermes_cli = ["_bundled/**/*", "web_dist/**/*", "tui_dist/*", ', "package-data")
+         'hermes_cli = ["_bundled/**/*", "web_dist/**/*", "tui_dist/*", "install-stamp.json", ', "package-data")
 
 # _packaged_dir returned the caller's source-checkout default without checking
 # it exists. From a wheel that default is site-packages/skills — missing — so
@@ -297,6 +427,10 @@ if url_left:
 foreign = [r for r in all_reqs if canonicalize_name(Requirement(r).name) == "hermes-agent"]
 if foreign:
     fail(f"requirements still name the upstream distribution: {foreign}")
+# pip has no overrides: what upstream forces with [tool.uv] must already hold
+# in the published requirements, or `pip install horo-next` cannot resolve.
+if any(canonicalize_name(Requirement(r).name) == "browser-harness" for r in all_reqs):
+    fail("browser-harness is still a requirement (its pillow==12.3.0 pin cannot resolve under pip)")
 
 spec = SpecifierSet(project.get("requires-python", ""))
 lo = f"{MIN_PYTHON[0]}.{MIN_PYTHON[1]}"
@@ -330,5 +464,5 @@ if failures:
 # workflow: a hardcoded list would drift from what each release declares.
 import json  # noqa: E402
 (ROOT / "horo-build.json").write_text(
-    json.dumps({"version": EXPECTED_VERSION, "pythons": supported}) + "\n", encoding="utf-8")
+    json.dumps({"version": EXPECTED_VERSION, "pythons": supported, "vendored": vendored}) + "\n", encoding="utf-8")
 print("[overlay] done")

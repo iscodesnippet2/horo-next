@@ -400,8 +400,10 @@ def build(root: Path, name: str) -> Path:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(m, dest)
         return out
-    # TUI: esbuild writes one self-contained ui-tui/dist/entry.js.
-    run(["node", "ui-tui/scripts/build.mjs"], root)
+    # TUI: esbuild writes one self-contained ui-tui/dist/entry.js. Since v0.22
+    # the compiler is scripts/build/tui.mjs; run bare, it writes the same file.
+    script = "scripts/build/tui.mjs" if (root / "scripts" / "build" / "tui.mjs").is_file() else "ui-tui/scripts/build.mjs"
+    run(["node", script], root)
     entry = root / "ui-tui" / "dist" / "entry.js"
     if not entry.is_file():
         sys.exit(f"[frontends] TUI build produced no {entry}")

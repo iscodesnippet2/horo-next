@@ -91,11 +91,13 @@ def tui_modules(root: Path) -> set[str]:
     entry = root / "ui-tui" / "dist" / "entry.js"
     if not entry.is_file():
         die(f"{entry} missing — run build_frontends.py first")
+    # Paths are relative to esbuild's working directory: the repo root for
+    # ui-tui/scripts/build.mjs, ui-tui/ for scripts/build/tui.mjs (v0.22+).
+    base = "ui-tui" if (root / "scripts" / "build" / "tui.mjs").is_file() else ""
     out = set()
     for line in entry.read_text(encoding="utf-8").splitlines():
         if line.startswith("// ") and "node_modules/" in line:
-            # Paths are relative to the repo root, where build.mjs runs esbuild.
-            d = package_dir(line[3:].strip())
+            d = package_dir(os.path.normpath(os.path.join(base, line[3:].strip())).replace(os.sep, "/"))
             if d:
                 out.add(d)
     return out
@@ -209,6 +211,18 @@ def generate(a) -> int:
     npm, notices = npm_components(root, bundled)
     py = python_components(a.core, a.all, json.loads(a.extras_map.read_text(encoding="utf-8")))
 
+    # Packages shipped inside the wheel rather than installed beside it. The
+    # purl names the release they came from, so advisories against it still
+    # match; pedigree records what was changed.
+    for v in meta.get("vendored", []):
+        purl = f"pkg:pypi/{v['name']}@{v['version']}"
+        py.append({"type": "library", "bom-ref": purl, "name": v["name"], "version": v["version"],
+                   "purl": purl, "scope": "required", "licenses": [{"expression": v["license"]}],
+                   "hashes": [{"alg": "SHA-256", "content": v["sha256"]}],
+                   "externalReferences": [{"type": "distribution", "url": v["url"]}],
+                   "pedigree": {"notes": "Vendored into horo-next at " + v["path"] + "/: " + "; ".join(v["patches"])},
+                   "properties": [{"name": "horo:installed-by", "value": "vendored"}]})
+
     unlicensed = [c["purl"] for c in npm if not c["licenses"]]
     if unlicensed:
         die(f"bundled npm packages without a declared license: {unlicensed}")
@@ -268,10 +282,11 @@ def generate(a) -> int:
     (root / NOTICES).write_text("\n".join(buf) + "\n", encoding="utf-8")
     pp = root / "pyproject.toml"
     text = pp.read_text(encoding="utf-8")
-    anchor = 'license-files = ["LICENSE"]'
-    if text.count(anchor) != 1:
-        die(f"pyproject.toml: anchor {anchor!r} not found — cannot ship the notices")
-    pp.write_text(text.replace(anchor, f'license-files = ["LICENSE", "{NOTICES}"]'), encoding="utf-8")
+    # The overlay may already have added a vendored package's license.
+    text, n = re.subn(r'^(license-files = \["LICENSE")', rf'\1, "{NOTICES}"', text, count=1, flags=re.M)
+    if n != 1:
+        die('pyproject.toml: license-files = ["LICENSE", ...] not found — cannot ship the notices')
+    pp.write_text(text, encoding="utf-8")
 
     without_file = sum(1 for n in notices if n[2] is None)
     print(f"[sbom] {len(py)} Python components ({sum(c['scope'] == 'required' for c in py)} core), "

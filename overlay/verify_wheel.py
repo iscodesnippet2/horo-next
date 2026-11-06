@@ -48,7 +48,11 @@ with tempfile.TemporaryDirectory() as tmp:
     tmp = Path(tmp)
     venv, home, cwd = tmp / "venv", tmp / "home", tmp / "elsewhere"
     home.mkdir(); cwd.mkdir()
-    env = {**os.environ, "HERMES_HOME": str(home), "VIRTUAL_ENV": str(venv), "NO_COLOR": "1"}
+    env = {**os.environ, "HERMES_HOME": str(home), "VIRTUAL_ENV": str(venv), "NO_COLOR": "1",
+           # Since v0.22 one gateway and one web backend serve each OS user, found
+           # through records outside HERMES_HOME (~/.local/state/hermes). Without
+           # this the test attaches to, or is refused by, Hermes the user runs.
+           "HERMES_GATEWAY_LOCK_DIR": str(tmp / "host-state"), "XDG_STATE_HOME": str(tmp / "state")}
     env.pop("PYTHONPATH", None)
 
     def run(*cmd, **kw):
@@ -123,6 +127,13 @@ out["adopted_home_checkout"] = str(banner._resolve_repo_dir())
 out["web_dist"] = (Path(hermes_cli.__file__).parent / "web_dist" / "index.html").is_file()
 from hermes_cli.main_tui_launch import _find_bundled_tui
 out["tui"] = str(_find_bundled_tui())
+try:
+    # Vendored browser-harness (v0.23+): browser_exec's engine, from the wheel.
+    import browser_harness.helpers, browser_harness.telemetry as bt
+    from tools.browser_use_cli import browser_exec_available
+    out["bh"] = [Path(browser_harness.__file__).parent.parent == base, browser_exec_available(), bt.is_enabled()]
+except ImportError as e:
+    out["bh"] = repr(e)
 print("JSON" + json.dumps(out))
 '''
     r = run(str(py), "-c", probe)
@@ -156,6 +167,9 @@ print("JSON" + json.dumps(out))
             check(data["tui"].endswith("tui_dist/entry.js"), "prebuilt TUI resolves from the wheel", data["tui"])
         else:
             check(data["tui"] == "None", "TUI left out (advisory) is absent", data["tui"])
+        if any(n.startswith("browser_harness/") for n in names):
+            check(data["bh"] == [True, True, False], "vendored browser-harness: imports from the wheel, "
+                  "browser_exec available, telemetry off", str(data["bh"]))
         if "tui" in FRONTENDS and data["tui"] != "None" and shutil.which("node"):
             r = run("node", "--check", data["tui"])
             check(r.returncode == 0, "TUI bundle parses under node", r.stderr[-200:])

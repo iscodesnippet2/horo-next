@@ -38,11 +38,16 @@ these fails:
 - **Only extras usable on an air-gapped network are provided** (allowlist in
   `overlay/horo_overlay.py`), so nothing ships or is audited for a cloud
   service the target cannot reach.
-- **Upstream's 14-day cooldown is kept**: a just-published release is where a
-  compromised maintainer account shows up first. A Python security fix still
-  inside it is let through by name, up to that fix's own upload time — as
-  upstream does by hand — and the release notes list each exception. npm fixes
-  wait out the cooldown.
+- **Vendored code is pinned and declared.** A dependency shipped inside the
+  wheel (browser-harness, from 0.23) comes from the exact release upstream
+  pins, checked against its SHA-256. The SBOM lists it under its own purl,
+  with what was changed in its pedigree.
+- **Upstream's cooldowns are kept**: a just-published release is where a
+  compromised maintainer account shows up first. Python: upstream's uv
+  `exclude-newer` (14 days through v0.21.5, 3 days since v0.22). A security fix
+  still inside it is let through by name, up to that fix's own upload time — as
+  upstream does by hand — and the release notes list each exception. npm:
+  14 days (upstream's `min-release-age`); fixes wait it out.
 - **The wheel is installed and exercised** in clean environments on every
   supported Python before it is published.
 
