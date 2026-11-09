@@ -187,6 +187,41 @@ if re.search(r'^version = "0\.0\.0"$', PP.read_text(encoding="utf-8"), re.M):
          '        "  pip install -U horo-next"\n'
          "    ),\n")
 
+# ── 2c. Plugin selection in an environment pip owns ──────────────────────
+# Since v0.23 every plugin enable/disable/install is admitted by PM, which
+# re-syncs the venv from the checkout's uv.lock and writes config.yaml inside
+# that transaction. A wheel has no uv.lock and its environment belongs to pip,
+# so `hermes plugins enable` failed for every plugin. Without the lockfile the
+# selection is written by PM's own PluginSelection — the same config edit and
+# compare-and-swap — and the venv is left to pip, which installed the plugin
+# and its dependencies.
+if (ROOT / "hermes_cli" / "plugins_admission.py").exists():
+    edit("hermes_cli/plugins_admission.py",
+         '''    home = Path(active_plugins_dir).parent if active_plugins_dir is not None else get_hermes_home()
+    try:
+        sync_venv(''',
+         '''    home = Path(active_plugins_dir).parent if active_plugins_dir is not None else get_hermes_home()
+    from pm import paths as _pm_paths
+    if not (_pm_paths.repo_root() / "uv.lock").is_file():  # horo-next: pip owns this environment
+        from pm.filesystem import durable_write_bytes, read_bytes_or_none
+        from pm.publication import PluginSelection
+        try:
+            proposal = PluginSelection({
+                "home": str(home.resolve()), "enabled": sorted(candidate_enabled),
+                "disabled": sorted(candidate_disabled), "extra_dirs": [str(Path(d).resolve()) for d in extra_dirs],
+                "settled": sorted(settled), "expected_config": expected_config,
+            })
+            if read_bytes_or_none(proposal.path) != proposal.previous:
+                raise ValueError("plugin configuration changed while preparing publication; retry")
+            durable_write_bytes(proposal.path, proposal.proposed)
+        except Exception as exc:
+            raise AdmissionRefused(str(exc)) from exc
+        return
+    try:
+        sync_venv(''')
+else:
+    ok("hermes_cli/plugins_admission.py: absent (before v0.23): selection is a plain config write")
+
 # ── 3. URL dependencies (postcondition) ──────────────────────────────────
 # PyPI rejects any Requires-Dist carrying a URL, extras included. Those
 # packages move to the operator's wheelhouse.

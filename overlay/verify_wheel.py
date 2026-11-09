@@ -197,6 +197,21 @@ print("JSON" + json.dumps(out))
     builtin = next((ln for ln in r.stdout.splitlines() if "builtin" in ln and "enabled" in ln), "")
     check("0 builtin" not in builtin and builtin != "", "`hermes skills list` shows builtin skills", builtin.strip())
 
+    # Since v0.23 a plugin selection goes through PM, which syncs from the
+    # checkout's uv.lock; from a wheel every enable failed. disk-cleanup is a
+    # bundled plugin that ships disabled and needs nothing to load.
+    def plugin_row(name: str) -> str:
+        r = run(str(hermes), "plugins", "list")
+        return next((ln for ln in r.stdout.splitlines() if name in ln), "")
+
+    r = run(str(hermes), "plugins", "enable", "disk-cleanup")
+    row = plugin_row("disk-cleanup")
+    check(r.returncode == 0 and "enabled" in row and "not enabled" not in row,
+          "`hermes plugins enable` writes the selection", (r.stdout + r.stderr).strip()[-300:])
+    r = run(str(hermes), "plugins", "disable", "disk-cleanup")
+    check(r.returncode == 0 and "disabled" in plugin_row("disk-cleanup"),
+          "`hermes plugins disable` writes the selection", (r.stdout + r.stderr).strip()[-300:])
+
     # Mattermost is the air-gapped site's messaging platform. Upstream ships
     # its one dependency only inside extras horo-next drops.
     r = run("uv", "pip", "install", f"{WHEEL}[mattermost]")
