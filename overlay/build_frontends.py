@@ -50,7 +50,10 @@ import sbom  # noqa: E402
 import sonatype  # noqa: E402
 
 # name in horo-build.json → (npm workspace, packaged directory)
-FRONTENDS = {"dashboard": ("web", "web_dist"), "tui": ("ui-tui", "tui_dist")}
+# The TUI ("tui": ("ui-tui", "tui_dist")) is not built: the site uses the
+# classic CLI and horo-webui, never `hermes --tui` or the dashboard's Chat tab
+# (which runs the TUI). Leaving it out drops its npm tree from every audit.
+FRONTENDS = {"dashboard": ("web", "web_dist")}
 # Upstream's .npmrc: min-release-age=14. A fix newer than that is reported, not taken.
 COOLDOWN_DAYS = 14
 # Moves past a major line with no fix, each checked by hand. Sonatype flags
@@ -290,7 +293,10 @@ def move_majors(root: Path) -> list[str]:
     """Apply MAJOR_MOVES to the manifests and re-lock. Fails closed on a pin
     that is not the one checked, so a new upstream release is looked at again."""
     notes = []
+    built = {ws for ws, _ in FRONTENDS.values()}
     for rel, name, major, version in MAJOR_MOVES:
+        if rel.split("/")[0] not in built:
+            continue
         pj = root / rel
         d = json.loads(pj.read_text(encoding="utf-8"))
         old = d["dependencies"].get(name)
@@ -302,7 +308,8 @@ def move_majors(root: Path) -> list[str]:
         # refuses the direct dependency (EOVERRIDE).
         pin(root, name, major_of(version), version, allow_new=False)
         notes.append(f"- {name} {old} → {version} in {rel}: major raise, no fixed release in {major}.x")
-    run([*NPM, "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"], root)
+    if notes:
+        run([*NPM, "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"], root)
     return notes
 
 
@@ -439,9 +446,10 @@ def main() -> int:
     moved = move_majors(root)
     install(root, locked=True)
     notes = ["", "## Front ends", "",
-             "The dashboard and TUI are prebuilt into the wheel; the target machine "
-             "does not run npm for them. A front end whose dependencies still carry "
-             "an advisory after raising them is left out.", ""]
+             "The dashboard is prebuilt into the wheel; the target machine does not "
+             "run npm for it. A front end whose dependencies still carry an advisory "
+             "after raising them is left out. The terminal UI is not built: "
+             "`hermes --tui` and the dashboard's Chat tab, which runs it, are not available.", ""]
     bumped = moved + bump(root)
     if bumped:
         notes += ["Raised npm packages:", *bumped, ""]

@@ -49,10 +49,9 @@ jobs:
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
-      # Builds the dashboard and TUI into the wheel, so the target machine
-      # never runs npm for them. Upstream's package.json engines, enforced by its
+      # Builds the dashboard (and, up to v0.21.5, the TUI) into the wheel, so the
+      # target machine never runs npm for them. Upstream's package.json engines, enforced by its
       # .npmrc engine-strict: >=26 since v0.22 (v0.21.5 also accepts >=26).
-      # Building only — the TUI bundle targets node20, the air-gapped site runs 22.
       # A front end still carrying an npm advisory after raising is left out.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -85,7 +84,7 @@ jobs:
           uv export --frozen --no-dev --no-emit-project --format requirements-txt \
             > "../requirements-${{ inputs.version }}-hashes.txt"
 
-      - name: Prebuild the dashboard and TUI
+      - name: Prebuild the dashboard
         # npm 11: npm 10 (bundled with Node 22) crashes re-locking this
         # monorepo after a pin moves. Upstream's engines allow >=11.17.
         env:

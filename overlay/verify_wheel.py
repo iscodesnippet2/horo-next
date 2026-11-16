@@ -162,11 +162,11 @@ print("JSON" + json.dumps(out))
         if "dashboard" in FRONTENDS:
             check(data["web_dist"], "prebuilt dashboard ships in the wheel")
         else:
-            check(not data["web_dist"], "dashboard left out (advisory) is absent")
+            check(not data["web_dist"], "dashboard left out is absent")
         if "tui" in FRONTENDS:
             check(data["tui"].endswith("tui_dist/entry.js"), "prebuilt TUI resolves from the wheel", data["tui"])
         else:
-            check(data["tui"] == "None", "TUI left out (advisory) is absent", data["tui"])
+            check(data["tui"] == "None", "TUI left out is absent", data["tui"])
         if any(n.startswith("browser_harness/") for n in names):
             check(data["bh"] == [True, True, False], "vendored browser-harness: imports from the wheel, "
                   "browser_exec available, telemetry off", str(data["bh"]))

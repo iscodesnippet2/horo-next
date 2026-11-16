@@ -75,13 +75,14 @@ pip install "horo-next[web,mcp,acp,mattermost]"
 
   The engine, browser-harness, ships inside the wheel with its telemetry and
   update check switched off.
-- **One gateway per OS user.** The CLI, TUI and dashboard attach to a gateway,
+- **One gateway per OS user.** The CLI and dashboard attach to a gateway,
   starting one in the background if none runs. Its rendezvous records live in
   `~/.local/state/hermes/` (`HERMES_GATEWAY_LOCK_DIR` moves them).
 - **SQLite 3.51.3 or newer** (or 3.50.7 / 3.44.6) lets Hermes use WAL; with an
   older one it logs a warning and falls back to a slower journal mode. Check
   with `python3 -c "import sqlite3; print(sqlite3.sqlite_version)"`.
-- **The TUI** needs `node` 20 or newer on `PATH`; npm is not used.
+- **No terminal UI.** `hermes --tui` and the dashboard's Chat tab (which runs
+  it) are not shipped; `hermes` starts the classic CLI. node is not needed.
 
 ## Reading the result
 
