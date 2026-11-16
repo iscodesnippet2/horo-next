@@ -33,7 +33,9 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Pinned: on ubuntu-latest's 26.04 image npm ran under the system's node 24,
+    # not setup-node's 26, and upstream's engine-strict refused it.
+    runs-on: ubuntu-24.04
     env:
       # Sonatype answers shared by this job's steps (overlay/sonatype.py): each
       # component asked about costs Guide credits. (`runner` is not available
@@ -185,7 +187,7 @@ jobs:
 
   verify:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -205,7 +207,7 @@ jobs:
   testpypi:
     if: inputs.publish
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: testpypi
     permissions:
       id-token: write
@@ -230,7 +232,7 @@ jobs:
   pypi:
     if: inputs.publish
     needs: testpypi
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: pypi
     permissions:
       id-token: write
