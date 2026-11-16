@@ -171,10 +171,6 @@ def sonatype_findings(root: Path) -> dict:
     lock = json.loads((root / "package-lock.json").read_text(encoding="utf-8"))["packages"]
     inst: dict[str, tuple[str, str]] = {}
     for k, v in lock.items():
-        # Build and test tools are left to npm audit: they never reach the
-        # wheel, and the release gate asks Sonatype about everything that does.
-        if v.get("dev") or v.get("devOptional"):
-            continue
         if "node_modules/" in k and not v.get("link") and "version" in v and (root / k).is_dir():
             name = v.get("name") or k.rsplit("node_modules/", 1)[1]
             inst[sonatype.npm_purl(name, v["version"])] = (name, v["version"])

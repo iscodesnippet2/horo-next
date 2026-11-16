@@ -171,10 +171,40 @@ def nearest_fix(vuln: dict, name: str, current: Version) -> Version | None:
     return min(fixes) if fixes else None
 
 
+def fix_for(name: str, version: str) -> Version | None:
+    """The smallest release clearing every advisory on name==version — OSV's
+    and, when available, Sonatype's — or None."""
+    fix = None
+    for v in osv(name, version):
+        if not v.get("withdrawn"):
+            f = nearest_fix(v, name, Version(version))
+            if f is None:
+                return None
+            fix = f if fix is None or f > fix else fix
+    if not sonatype.available():
+        return fix
+    # Sonatype gives no fixed version; ask it about the releases after this
+    # one (from OSV's fix up, if any) and take the first it reports clean.
+    floor = fix or Version(version)
+    cands = [str(r) for r in pypi_releases(name) if r > Version(version) and r >= floor][:40]
+    clean = sonatype.first_clean(lambda x: sonatype.pypi_purl(name, x), cands)
+    return Version(clean) if clean else None
+
+
 meta = tomllib.loads(PP.read_text(encoding="utf-8"))["project"]
 specs = list(meta.get("dependencies", []))
 for group in meta.get("optional-dependencies", {}).values():
     specs.extend(group)
+
+# Sonatype has advisories OSV lacks (Markdown 3.11.2's CVE-2019-25781), and the
+# release gate asks it about every direct dependency too: ask once, up front.
+pinned = {}
+for raw in specs:
+    req = Requirement(raw)
+    for spec in req.specifier:
+        if spec.operator in ("==", ">="):
+            pinned[sonatype.pypi_purl(canonicalize_name(req.name), spec.version)] = None
+sona = sonatype.report(list(pinned)) if sonatype.available() else {}
 
 changes, held = [], []
 seen = set()
@@ -190,9 +220,18 @@ for raw in specs:
         except InvalidVersion:
             continue
         vulns = [v for v in osv(name, str(current)) if not v.get("withdrawn")]
-        if not vulns:
+        # A floor Sonatype does not know is not what gets installed; the
+        # release gate still fails closed on everything the wheel resolves to.
+        sona_ids = [f"sonatype:{x.get('cve') or x.get('id')}"
+                    for x in sona.get(sonatype.pypi_purl(name, spec.version), [])
+                    if x is not sonatype.NOT_RETURNED]
+        if not vulns and not sona_ids:
             continue
-        fixes = [(v["id"], nearest_fix(v, name, current)) for v in vulns]
+        if sona_ids:
+            fix = fix_for(name, str(current))
+            fixes = [(v["id"], fix) for v in vulns] + [(i, fix) for i in sona_ids]
+        else:
+            fixes = [(v["id"], nearest_fix(v, name, current)) for v in vulns]
         unfixed = [vid for vid, fx in fixes if fx is None]
         if unfixed:
             held.append(f"{req.name}{spec}: no fixed version for {', '.join(unfixed)}")
@@ -304,27 +343,6 @@ def vulnerable(pkgs: dict[str, str]) -> dict[str, list[str]]:
             if ids:
                 found.setdefault(n, []).extend(f"sonatype:{i}" for i in ids)
     return found
-
-
-def fix_for(name: str, version: str) -> Version | None:
-    """The smallest release clearing every advisory on name==version — OSV's
-    and, when available, Sonatype's — or None."""
-    fix = None
-    for v in osv(name, version):
-        if not v.get("withdrawn"):
-            f = nearest_fix(v, name, Version(version))
-            if f is None:
-                return None
-            fix = f if fix is None or f > fix else fix
-    if not sonatype.available():
-        return fix
-    # Sonatype gives no fixed version; ask it about the releases after this
-    # one (from OSV's fix up, if any) and take the first it reports clean.
-    floor = fix or Version(version)
-    cands = [str(r) for r in pypi_releases(name) if r > Version(version) and r >= floor][:40]
-    clean = sonatype.first_clean(lambda x: sonatype.pypi_purl(name, x), cands)
-    return Version(clean) if clean else None
-
 
 
 if not held:
